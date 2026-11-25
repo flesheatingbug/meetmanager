@@ -903,6 +903,7 @@
         ${ui.sel.size ? `<button class="btn small" data-act="ent-bulk">Change selected…</button><button class="btn small danger" data-act="ent-delsel">Delete selected</button><button class="btn small" data-act="ent-clearsel">Clear selection</button>` : ''}
         <span class="spacer"></span>
         <button class="btn small" data-act="ent-renumber">Sort &amp; renumber…</button>
+        <button class="btn small" data-act="ent-email" title="Open an email with the athletes shown and their numbers">✉ Email list</button>
         <button class="btn small" data-act="ent-export">Export athletes</button>
       </div>
       ${S.entries.length ? `<div class="tbl-wrap"><table class="t" id="ent-table"><thead><tr><th class="c"><input type="checkbox" id="sel-all" title="Select all shown"></th>${th('id', 'No.')}${th('name', 'Name')}${th('category', 'Category')}${th('team', 'Club')}${showST ? '<th>Scoring team</th>' : ''}${regionCounty() ? '<th>County</th>' : ''}${regionProvince() ? '<th>Province</th>' : ''}${showDob ? '<th>DOB</th>' : ''}${showReg ? '<th>Reg #</th>' : ''}${showMasters ? '<th>Masters club team</th><th>Masters county team</th>' : ''}</tr></thead><tbody>${rows}</tbody></table></div>`
@@ -1295,6 +1296,111 @@
     inp.click();
   }
 
+
+  // ================================================================ email athlete lists (opens the default email app)
+  const MAILTO_MAX = 1900; // Windows / mail apps cut mailto links at roughly 2000 characters
+  const validEmail = s => /^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$/.test(String(s || '').trim());
+  /** Group athletes by race, in program order. */
+  function raceGroups(list) {
+    const d = derive();
+    const catIdx = new Map(d.catOrder.map((c, i) => [c, i]));
+    const groups = new Map();
+    for (const e of [...list].sort((a, b) => (catIdx.get(a.category) ?? 999) - (catIdx.get(b.category) ?? 999) || (a.id ?? 1e9) - (b.id ?? 1e9))) {
+      const ev = d.eventOfCat.get(e.category);
+      const key = e.category || '(no category)';
+      if (!groups.has(key)) groups.set(key, { title: key, race: ev ? [`Event ${ev.number}`, ev.distance, ev.time].filter(Boolean).join(', ') : '', list: [] });
+      groups.get(key).list.push(e);
+    }
+    return [...groups.values()];
+  }
+  function meetLine() {
+    const st = S.settings;
+    return [st.title, st.date && fmtDate(st.date, true), st.venue].filter(Boolean).join(' · ');
+  }
+  function listText(list, club) {
+    const groups = raceGroups(list);
+    const showClub = !club;
+    const lines = [club ? `Hi,\n\nHere are the race numbers for ${club} athletes entered in ${S.settings.title}${S.settings.date ? ' on ' + fmtDate(S.settings.date, true) : ''}${S.settings.venue ? ' at ' + S.settings.venue : ''}.` : `Athlete numbers — ${meetLine()}`, ''];
+    for (const g of groups) {
+      lines.push(`${g.title}${g.race ? ' (' + g.race + ')' : ''}`);
+      for (const e of g.list) lines.push(`  ${String(e.id ?? '–').padStart(4)}  ${e.name}${showClub && e.team ? ' — ' + e.team : ''}`);
+      lines.push('');
+    }
+    lines.push(`${list.length} athlete${list.length === 1 ? '' : 's'} in total.`);
+    if (club) lines.push('', 'Please let us know if anything needs changing.');
+    return lines.join('\n');
+  }
+  function listHtml(list, club) {
+    const groups = raceGroups(list);
+    const intro = club ? `<p>Hi,</p><p>Here are the race numbers for <b>${esc(club)}</b> athletes entered in <b>${esc(S.settings.title)}</b>${S.settings.date ? ' on ' + esc(fmtDate(S.settings.date, true)) : ''}${S.settings.venue ? ' at ' + esc(S.settings.venue) : ''}.</p>` : `<p><b>Athlete numbers — ${esc(meetLine())}</b></p>`;
+    return `<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt">${intro}${groups.map(g => `<p style="margin:12px 0 4px"><b>${esc(g.title)}</b>${g.race ? ' (' + esc(g.race) + ')' : ''}</p><table style="border-collapse:collapse">${g.list.map(e => `<tr><td style="padding:1px 14px 1px 0;text-align:right"><b>${esc(e.id ?? '–')}</b></td><td style="padding:1px 14px 1px 0">${esc(e.name)}</td>${!club ? `<td style="color:#555">${esc(e.team)}</td>` : ''}</tr>`).join('')}</table>`).join('')}<p>${list.length} athlete${list.length === 1 ? '' : 's'} in total.</p>${club ? '<p>Please let us know if anything needs changing.</p>' : ''}</div>`;
+  }
+  async function copyRich(html, text) {
+    try {
+      if (navigator.clipboard && window.ClipboardItem) {
+        await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob([text], { type: 'text/plain' }) })]);
+        return true;
+      }
+    } catch (e) { /* fall back */ }
+    try {
+      const div = document.createElement('div'); div.innerHTML = html; div.style.cssText = 'position:fixed;left:-9999px;top:0';
+      document.body.appendChild(div);
+      const r = document.createRange(); r.selectNodeContents(div);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      const ok = document.execCommand('copy'); sel.removeAllRanges(); div.remove();
+      return ok;
+    } catch (e) { return false; }
+  }
+  async function openMailto(url) {
+    if (isApp) await invoke('open_mailto', { url });
+    else { const a = document.createElement('a'); a.href = url; a.rel = 'noopener'; document.body.appendChild(a); a.click(); a.remove(); }
+  }
+  /** Open the email app with the list. Long lists are copied to the clipboard to paste in. */
+  async function emailList(list, { club = '', to = '' } = {}) {
+    if (!list.length) { toast('No athletes to email', true); return; }
+    const subject = club ? `${club} — race numbers for ${S.settings.title}` : `Athlete numbers — ${S.settings.title}`;
+    const text = listText(list, club);
+    const enc = v => encodeURIComponent(v).replace(/%20/g, '%20');
+    const base = `mailto:${to ? encodeURIComponent(to.trim()).replace(/%40/g, '@') : ''}?subject=${enc(subject)}`;
+    let url = `${base}&body=${enc(text.replace(/\n/g, '\r\n'))}`;
+    let pasted = false;
+    if (url.length > MAILTO_MAX) {
+      pasted = await copyRich(listHtml(list, club), text);
+      url = `${base}&body=${enc((pasted ? 'Press Ctrl+V here to paste the list.' : 'The list was too long to add automatically.') + '\r\n\r\n')}`;
+    }
+    try { await openMailto(url); }
+    catch (e) { toast('Could not open your email app: ' + (e.message || e), true); return; }
+    if (pasted) modal('Email opened', `<p style="margin-top:0">The list of ${list.length} athletes is too long to put into the email automatically, so it's been <b>copied</b>.</p><p>In the new email, click in the message and press <kbd>Ctrl</kbd>+<kbd>V</kbd> to paste it.</p>`, { footer: '<button class="btn primary" data-close2>OK</button>', onMount: m => { $('[data-close2]', m.el).onclick = m.close; } });
+    else if (url.length > MAILTO_MAX) toast('Your email app opened, but the list couldn\'t be copied — use Export instead', true);
+  }
+  function emailClubsDialog() {
+    const groups = clubGroups().filter(([club]) => club !== '(no club)');
+    const sent = ui.emailed || (ui.emailed = new Set());
+    const draw = m => {
+      m.body.innerHTML = `<p class="small muted" style="margin-top:0">Each button opens a new email in your email app with that club's athletes and numbers. Add the club's address once and it's remembered.</p>
+        <div class="tbl-wrap" style="max-height:60vh"><table class="t small"><thead><tr><th>Club</th><th class="num">Athletes</th><th>Email address</th><th></th></tr></thead><tbody>
+        ${groups.map(([club, list]) => { const t = derive().teamByName.get(club); return `<tr><td><b>${esc(club)}</b></td><td class="num">${list.length}</td>
+          <td><input type="text" data-email-club="${esc(club)}" value="${esc(t && t.email || '')}" placeholder="add the club's email" style="width:230px" ${t ? '' : 'disabled title="Add this club under Reference data → Clubs first"'}></td>
+          <td style="white-space:nowrap"><button class="btn small ${sent.has(club) ? '' : 'primary'}" data-send="${esc(club)}">✉ Email</button>${sent.has(club) ? ' <span class="pill ok">opened</span>' : ''}</td></tr>`; }).join('')}
+        </tbody></table></div>`;
+      $$('[data-email-club]', m.body).forEach(inp => inp.addEventListener('change', () => {
+        const t = S.teams.find(x => x.name === inp.dataset.emailClub); if (!t) return;
+        const v = inp.value.trim();
+        if (v && !v.split(/[;,]/).every(validEmail)) { toast('That doesn\'t look like an email address', true); return; }
+        t.email = v; commit({ render: false });
+      }));
+      $$('[data-send]', m.body).forEach(b => b.onclick = async () => {
+        const club = b.dataset.send; const [, list] = groups.find(([c]) => c === club);
+        const inp = $$('[data-email-club]', m.body).find(i => i.dataset.emailClub === club);
+        const t = S.teams.find(x => x.name === club);
+        if (t && inp && inp.value.trim() !== (t.email || '')) { t.email = inp.value.trim(); commit({ render: false }); }
+        await emailList(list, { club, to: (t && t.email) || '' });
+        sent.add(club); draw(m);
+      });
+    };
+    modal(`Email club lists — ${S.settings.title}`, '', { wide: true, onMount: draw });
+  }
+
   // ================================================================ 4. lists
   function bookletReport() {
     let h = header() + '<h2 style="border:0;margin:6px 0 12px">Competitors</h2>';
@@ -1376,7 +1482,7 @@
     const html = S.entries.length || ui.listTab === 'program' ? rep() : '<div class="empty">Add athletes first.</div>';
     return `<h2>Lists &amp; booklet</h2><p class="sub">Printable lists, built from the program and athletes. They update automatically.</p>
       <div class="toolbar"><div class="subtabs" style="margin:0">${Object.entries(tabs).map(([k, [l]]) => `<button data-act="list-tab" data-k="${k}" class="${ui.listTab === k ? 'active' : ''}">${l}</button>`).join('')}</div>
-      <span class="spacer"></span><button class="btn primary" data-act="list-print">🖨 Print ${esc(label.toLowerCase())}</button>${tabs[ui.listTab][2] ? '<button class="btn" data-act="list-xlsx">Excel</button><button class="btn" data-act="list-csv">CSV</button>' : ''}</div>
+      <span class="spacer"></span>${ui.listTab === 'clubs' && S.entries.length ? '<button class="btn primary" data-act="list-email">✉ Email clubs…</button>' : ''}<button class="btn ${ui.listTab === 'clubs' ? '' : 'primary'}" data-act="list-print">🖨 Print ${esc(label.toLowerCase())}</button>${tabs[ui.listTab][2] ? '<button class="btn" data-act="list-xlsx">Excel</button><button class="btn" data-act="list-csv">CSV</button>' : ''}</div>
       <div class="report" id="list-report">${html}</div>`;
   }
 
@@ -1568,9 +1674,10 @@
       const q = X.lc(ui.clubQ);
       const list = S.teams.map((t, i) => [t, i]).filter(([t]) => !q || X.lc(t.name).includes(q) || X.lc(t.county).includes(q) || X.lc(t.code).includes(q));
       body = `<div class="toolbar"><input type="search" id="club-q" placeholder="Search clubs or county…" value="${esc(ui.clubQ)}" style="width:260px"><button class="btn small" data-act="club-add">+ Add club</button><button class="btn small" data-act="club-paste">Paste club list…</button><span class="spacer"></span><span class="small muted">${Object.keys(S.aliases).length} remembered spellings</span>${Object.keys(S.aliases).length ? '<button class="btn small" data-act="alias-clear">Forget them</button>' : ''}</div>
-        <div class="tbl-wrap"><table class="t small"><thead><tr><th>Club name</th><th>Code</th><th>County</th><th>Province</th><th class="num">Athletes</th><th></th></tr></thead><tbody>
+        <div class="tbl-wrap"><table class="t small"><thead><tr><th>Club name</th><th>Code</th><th>County</th><th>Province</th><th>Email (for club lists)</th><th class="num">Athletes</th><th></th></tr></thead><tbody>
         ${list.map(([t, i]) => `<tr><td><input type="text" data-club="${i}" data-k="name" value="${esc(t.name)}"></td><td><input type="text" style="width:90px" data-club="${i}" data-k="code" value="${esc(t.code)}"></td>
           <td><select data-club="${i}" data-k="county">${listOptions(S.counties, t.county)}</select></td><td><select data-club="${i}" data-k="province">${listOptions(S.provinces, t.province)}</select></td>
+          <td><input type="text" style="width:200px" data-club="${i}" data-k="email" value="${esc(t.email || '')}" placeholder="secretary@club.ie"></td>
           <td class="num">${S.entries.filter(e => e.team === t.name).length || ''}</td><td><button class="btn icon small danger" data-act="club-del" data-i="${i}">✕</button></td></tr>`).join('')}
         </tbody></table></div>`;
     } else {
@@ -1611,7 +1718,7 @@
     if (q) q.oninput = () => { ui.clubQ = q.value; const p = q.selectionStart; render(); const q2 = $('#club-q'); q2.focus(); q2.setSelectionRange(p, p); };
   }
   function pasteClubs() {
-    const body = `<p class="small muted">Paste a list of clubs: name, then optionally county and province columns (from a spreadsheet or website). Existing clubs are updated.</p><textarea class="paste-zone" id="cl-text"></textarea>`;
+    const body = `<p class="small muted">Paste a list of clubs: name, then optionally county, province and an email address (from a spreadsheet or website). Existing clubs are updated.</p><textarea class="paste-zone" id="cl-text"></textarea>`;
     modal('Paste club list', body, {
       wide: true, footer: '<button class="btn" data-c>Cancel</button><button class="btn primary" data-ok>Add clubs</button>', onMount: m => {
         $('#cl-text', m.body).focus();
@@ -1623,9 +1730,10 @@
             if (/^(club|team|name)$/i.test(r[0])) continue;
             const county = S.counties.find(c => X.lc(c) === X.lc(r[1])) || '';
             const prov = S.provinces.find(c => X.lc(c) === X.lc(r[2])) || '';
+            const email = (r.find(c => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c)) || '');
             const ex = S.teams.find(t => X.lc(t.name) === X.lc(r[0]));
-            if (ex) { if (county) ex.county = county; if (prov) ex.province = prov; upd++; }
-            else { S.teams.push({ name: r[0], code: '', county, province: prov }); add++; }
+            if (ex) { if (county) ex.county = county; if (prov) ex.province = prov; if (email) ex.email = email; upd++; }
+            else { S.teams.push({ name: r[0], code: '', county, province: prov, email }); add++; }
           }
           S.teams.sort((a, b) => a.name.localeCompare(b.name));
           m.close(); commit(); toast(`${add} clubs added, ${upd} updated`);
@@ -1697,6 +1805,13 @@
     'ent-clearsel'() { ui.sel.clear(); render(); },
     'ent-bulk': bulkEdit,
     'ent-renumber': renumber,
+    'ent-email'() {
+      const list = filteredEntries();
+      const club = ui.fTeam || (new Set(list.map(e => e.team)).size === 1 ? list[0] && list[0].team : '');
+      const t = club && derive().teamByName.get(club);
+      emailList(list, { club: club || '', to: (t && t.email) || '' });
+    },
+    'list-email'() { emailClubsDialog(); },
     'ent-export'() { downloadXlsx(S.settings.title + ' - athletes', [entriesSheet()]); },
     // lists
     'list-tab'(el) { ui.listTab = el.dataset.k; render(); },

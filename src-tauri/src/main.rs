@@ -265,6 +265,15 @@ fn update_install(app: tauri::AppHandle, path: String) -> Result<(), String> {
     }
 }
 
+/// Open a new email in the default email app.
+#[tauri::command]
+fn open_mailto(url: String) -> Result<(), String> {
+    if !url.starts_with("mailto:") {
+        return Err("Not an email link".into());
+    }
+    open::that_detached(&url).map_err(err)
+}
+
 /// Open the releases page in the default browser.
 #[tauri::command]
 fn open_releases() -> Result<(), String> {
@@ -290,7 +299,8 @@ fn main() {
             update_check,
             update_download,
             update_install,
-            open_releases
+            open_releases,
+            open_mailto
         ])
         .run(tauri::generate_context!())
         .expect("error while running XC Organiser");
