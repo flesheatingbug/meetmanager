@@ -874,11 +874,86 @@
     return { meet: { settings, program, entries, results, ageCategories, teams, mastersTeamCategories, counties, provinces }, report };
   }
 
+  // ---------------------------------------------------------------- folder sync (OneDrive etc.)
+  /*
+   * Each meet is one file "<id>.json" in the sync folder:
+   *   {format:'xc-meet-sync', id, rev, deleted?, updatedAt, device, title, date, state}
+   * Every local save gives the meet a new random rev. Locally we remember, per meet,
+   *   rev      – the current local version
+   *   baseRev  – the version last known to be in the folder (common ancestor)
+   *   dirty    – changed locally since baseRev
+   *   deleted  – deleted locally (tombstone)
+   * OneDrive may leave extra copies like "<id>-LAPTOP.json" when both PCs wrote while
+   * offline; files are grouped by the id inside them, not by file name.
+   */
+  /*
+   * Versions carry history: a file's `ancestors` lists the revs it was built from, and each local meta
+   * keeps `history` (revs up to the last synced one) and `at` (when the current version was made).
+   * A version that has our rev among its ancestors is simply newer -> take it. Two versions that
+   * don't contain each other were edited separately (e.g. laptop offline while desktop edited):
+   * both computers pick the same winner (latest `at`, then rev) and keep the loser as a copy with the
+   * predictable id "<id>~<rev>", so both computers end up with exactly the same two meets.
+   */
+  const newer = (a, b) => (a.at || '') > (b.at || '') || ((a.at || '') === (b.at || '') && a.rev > b.rev);
+  /** Plan what to do. locals: Map id -> meta; remotes: [{file,id,rev,deleted,updatedAt,ancestors}] */
+  function planSync(locals, remotes) {
+    const byId = new Map();
+    for (const r of remotes) { if (!r || !r.id || !r.rev) continue; if (!byId.has(r.id)) byId.set(r.id, []); byId.get(r.id).push(r); }
+    const actions = [];
+    for (const id of new Set([...locals.keys(), ...byId.keys()])) {
+      const L = locals.get(id), R = byId.get(id) || [];
+      const canonical = id + '.json';
+      const versions = [...new Map(R.map(r => [r.rev, { ...r, at: r.updatedAt || '', ancestors: r.ancestors || [] }])).values()];
+      const known = new Set(L ? [...(L.history || []), L.rev, L.baseRev].filter(Boolean) : []);
+      const superseded = new Set(versions.flatMap(v => v.ancestors));
+      const incoming = versions.filter(v => !known.has(v.rev) && !superseded.has(v.rev))
+        .sort((a, b) => (newer(a, b) ? -1 : newer(b, a) ? 1 : 0));
+      const [main, ...others] = incoming;
+      const copyOthers = () => others.filter(o => !o.deleted).forEach(o => actions.push({ type: 'copyRemote', id, file: o.file, rev: o.rev }));
+      const take = v => actions.push(v.deleted ? { type: L && !L.deleted ? 'deleteLocal' : 'tombstone', id, file: v.file, rev: v.rev } : { type: 'pull', id, file: v.file, rev: v.rev });
+      let final = null; // 'local' or a remote version that should end up as <id>.json
+      if (!L) {
+        if (!main) continue;
+        take(main); final = main; copyOthers();
+      } else if (!main) {
+        const hasMine = versions.some(v => v.rev === L.rev);
+        if (L.dirty || (!hasMine && !(L.deleted && !versions.length))) { actions.push({ type: 'push', id, merged: [] }); final = 'local'; }
+        else final = versions.find(v => v.rev === L.rev) || null;
+      } else if (!L.dirty && main.ancestors.includes(L.rev)) {
+        take(main); final = main; copyOthers(); // simply a newer version of ours
+      } else {
+        // edited separately on both computers
+        const mine = { rev: L.rev, at: L.at || '' };
+        if (L.deleted && main.deleted) { actions.push({ type: 'tombstone', id, file: main.file, rev: main.rev }); final = main; }
+        else if (L.deleted) { take(main); final = main; }                                     // their edits beat our delete
+        else if (main.deleted) { actions.push({ type: 'push', id, merged: [main.rev] }); final = 'local'; } // our edits beat their delete
+        else if (newer(mine, main)) {
+          actions.push({ type: 'copyRemote', id, file: main.file, rev: main.rev });
+          actions.push({ type: 'push', id, merged: [main.rev] }); final = 'local';
+        } else {
+          actions.push({ type: 'copyLocal', id, rev: L.rev, file: main.file });
+          take(main); final = main;
+        }
+        copyOthers();
+      }
+      if (final && final !== 'local' && final.file !== canonical) actions.push({ type: 'copy', id, from: final.file, to: canonical });
+      for (const r of R) if (r.file !== canonical) actions.push({ type: 'remove', id, file: r.file });
+    }
+    const order = { copyLocal: 0, copyRemote: 1, tombstone: 2, deleteLocal: 2, pull: 2, push: 3, copy: 3, remove: 4 };
+    return actions.sort((a, b) => order[a.type] - order[b.type]);
+  }
+  /** Order-independent JSON for comparing two meets' content. */
+  function stableStringify(v) {
+    if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
+    if (v && typeof v === 'object') return '{' + Object.keys(v).sort().filter(k => v[k] !== undefined).map(k => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}';
+    return JSON.stringify(v);
+  }
+
   root.XC = {
     norm, lc, levenshtein, clubKey, clubCore, makeClubMatcher, parseGender, catTokens, makeCategoryMatcher,
     catDobRange, categoryFromDob, parseDate, formatName, splitFullName, titleCase, parseDelimited, parseCSV,
     parseHtmlTables, FIELDS, headerField, detectColumns, rowsToRecords, computeTeams, scoreEvent, validate,
-    buildXlsx, readXlsx, crc32, colName, isMeetWorkbook, importWorkbook, wbTime,
+    buildXlsx, readXlsx, crc32, colName, isMeetWorkbook, importWorkbook, wbTime, planSync, stableStringify,
   };
   if (typeof module !== 'undefined') module.exports = root.XC;
 })(typeof window !== 'undefined' ? window : globalThis);

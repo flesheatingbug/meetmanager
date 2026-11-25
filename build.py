@@ -1,7 +1,8 @@
 """Build the single-file app:  python build.py
 
 Inlines src/ (HTML, CSS, JS) and data/ (reference data + example meet)
-into app/XC-Meet-Manager.html, which runs offline in Edge or Chrome.
+into app/XC-Meet-Manager.html (runs offline in Edge or Chrome) and
+tauri-dist/index.html (the Windows app, see src-tauri/).
 """
 import json
 import pathlib
@@ -31,3 +32,7 @@ html = html.replace('/*CORE*/', script(read(SRC / 'core.js')))
 html = html.replace('/*APP*/', script(read(SRC / 'app.js')))
 OUT.write_text(html, encoding='utf-8')
 print(f'Built {OUT.relative_to(ROOT)} ({len(html) // 1024} KB)')
+# same page for the Windows app (Tauri) build
+TAURI = ROOT / 'tauri-dist'
+TAURI.mkdir(exist_ok=True)
+(TAURI / 'index.html').write_text(html, encoding='utf-8')

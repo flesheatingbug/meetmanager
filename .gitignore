@@ -6,3 +6,7 @@ private-*.json
 reference*.json
 .DS_Store
 Thumbs.db
+tauri-dist/
+src-tauri/target/
+src-tauri/gen/
+node_modules/

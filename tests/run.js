@@ -92,4 +92,39 @@ test('importing a meet workbook (Horse & Jockey layout)', () => {
   assert.strictEqual(report.resultSheets, 1); // hidden sheet ignored
 });
 
+test('sync planning', () => {
+  const plan = (locals, remotes) => XC.planSync(new Map(Object.entries(locals)), remotes).map(a => [a.type, a.file || a.from || '', a.to || '', a.merged && a.merged.length ? '+' + a.merged.join(',') : ''].filter(Boolean).join(' '));
+  const R = (id, rev, at, ancestors = [], extra = {}) => ({ file: id + '.json', id, rev, updatedAt: at, ancestors, ...extra });
+  const M = (rev, baseRev, dirty, at, history = [], extra = {}) => ({ rev, baseRev, dirty, at, history: baseRev ? [...history, baseRev] : history, ...extra });
+  // new on this PC -> push; new in folder -> pull; in sync -> nothing
+  assert.deepStrictEqual(plan({ a: M('r1', null, true, 't1') }, []), ['push']);
+  assert.deepStrictEqual(plan({}, [R('b', 'x1', 't1')]), ['pull b.json']);
+  assert.deepStrictEqual(plan({ a: M('r1', 'r1', false, 't1') }, [R('a', 'r1', 't1')]), []);
+  // edited here -> push; newer version from the other PC (built on ours) -> pull
+  assert.deepStrictEqual(plan({ a: M('r2', 'r1', true, 't2') }, [R('a', 'r1', 't1')]), ['push']);
+  assert.deepStrictEqual(plan({ a: M('r1', 'r1', false, 't1') }, [R('a', 'r2', 't2', ['r1'])]), ['pull a.json']);
+  // several edits there since we last looked
+  assert.deepStrictEqual(plan({ a: M('r1', 'r1', false, 't1') }, [R('a', 'r4', 't4', ['r1', 'r2', 'r3'])]), ['pull a.json']);
+  // an older copy of ours turning up (e.g. OneDrive restore) is ignored, then ours is re-written
+  assert.deepStrictEqual(plan({ a: M('r3', 'r3', false, 't3', ['r1', 'r2']) }, [R('a', 'r2', 't2', ['r1'])]), ['push']);
+  // edited separately on both: newer wins, older kept as a copy — same result on both PCs
+  assert.deepStrictEqual(plan({ a: M('L2', 'r1', true, 't5') }, [R('a', 'D2', 't3', ['r1'])]), ['copyRemote a.json', 'push +D2']);
+  assert.deepStrictEqual(plan({ a: M('D2', 'r1', true, 't3') }, [R('a', 'L2', 't5', ['r1'])]), ['copyLocal a.json', 'pull a.json']);
+  // the laptop case: it "pushed" to its own OneDrive folder while offline, so it isn't dirty
+  assert.deepStrictEqual(plan({ a: M('L2', 'L2', false, 't5', ['r1']) }, [R('a', 'D2', 't3', ['r1'])]), ['copyRemote a.json', 'push +D2']);
+  assert.deepStrictEqual(plan({ a: M('D2', 'D2', false, 't3', ['r1']) }, [R('a', 'D2', 't3', ['r1']), { ...R('a', 'L2', 't5', ['r1']), file: 'a-LAPTOP.json' }]),
+    ['copyLocal a-LAPTOP.json', 'pull a-LAPTOP.json', 'copy a-LAPTOP.json a.json', 'remove a-LAPTOP.json']);
+  // after the winner merged the loser, the other PC just takes it
+  assert.deepStrictEqual(plan({ a: M('D2', 'D2', false, 't3', ['r1']) }, [R('a', 'L2', 't5', ['r1', 'D2'])]), ['pull a.json']);
+  // deleted there, untouched here -> delete here; deleted there but edited here -> keep ours
+  assert.deepStrictEqual(plan({ a: M('r1', 'r1', false, 't1') }, [R('a', 'd1', 't2', ['r1'], { deleted: true })]), ['deleteLocal a.json']);
+  assert.deepStrictEqual(plan({ a: M('r2', 'r1', true, 't2') }, [R('a', 'd1', 't3', ['r1'], { deleted: true })]), ['push +d1']);
+  // deleted here, untouched there -> push tombstone; deleted here but edited there -> keep theirs
+  assert.deepStrictEqual(plan({ a: M('d2', 'r1', true, 't2', [], { deleted: true }) }, [R('a', 'r1', 't1')]), ['push']);
+  assert.deepStrictEqual(plan({ a: M('d2', 'r1', true, 't2', [], { deleted: true }) }, [R('a', 'r5', 't3', ['r1'])]), ['pull a.json']);
+  // file missing from the folder -> put it back
+  assert.deepStrictEqual(plan({ a: M('r1', 'r1', false, 't1') }, []), ['push']);
+  assert.strictEqual(XC.stableStringify({ b: 1, a: [1, { d: 2, c: 3 }] }), XC.stableStringify({ a: [1, { c: 3, d: 2 }], b: 1 }));
+});
+
 console.log(`\n${passed} tests passed`);

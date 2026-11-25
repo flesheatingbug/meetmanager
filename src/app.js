@@ -8,7 +8,7 @@
   const clone = o => JSON.parse(JSON.stringify(o));
   const SEED = JSON.parse($('#seed-data').textContent);
   const LS_CUR = 'xcmm.current.v1', LS_REF = 'xcmm.reference.v1', LS_LAST = 'xcmm.lastMeet', LS_BACKUP = 'xcmm.lastBackup';
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.3.0';
   let uidc = Date.now();
   const uid = () => 'a' + (uidc++).toString(36);
 
@@ -74,12 +74,16 @@
   }
 
   // ================================================================ meets library (IndexedDB)
+  const newRev = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   const DB = {
     db: null,
     open() {
       return new Promise((res, rej) => {
-        const r = indexedDB.open('xc-meet-manager', 1);
-        r.onupgradeneeded = () => { const db = r.result; db.createObjectStore('meets'); db.createObjectStore('summaries'); };
+        const r = indexedDB.open('xc-meet-manager', 2);
+        r.onupgradeneeded = () => {
+          const db = r.result;
+          for (const n of ['meets', 'summaries', 'sync']) if (!db.objectStoreNames.contains(n)) db.createObjectStore(n);
+        };
         r.onsuccess = () => { DB.db = r.result; res(); };
         r.onerror = () => rej(r.error);
       });
@@ -92,21 +96,45 @@
       });
     },
     req: r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }),
-    put(state) {
+    /** Save a meet. opts.syncRev = it came from the sync folder (so it's already in sync). */
+    put(state, opts = {}) {
       const sum = summarise(state);
-      return DB.tx(['meets', 'summaries'], 'readwrite', t => { t.objectStore('meets').put(state, state.id); t.objectStore('summaries').put(sum, state.id); }).then(() => sum);
+      return DB.tx(['meets', 'summaries', 'sync'], 'readwrite', t => {
+        t.objectStore('meets').put(state, state.id); t.objectStore('summaries').put(sum, state.id);
+        const ms = t.objectStore('sync'); const g = ms.get(state.id);
+        g.onsuccess = () => {
+          const old = g.result || {};
+          ms.put(opts.syncRev ? { id: state.id, rev: opts.syncRev, baseRev: opts.syncRev, dirty: false, at: opts.at || '', history: opts.history || [] }
+            : opts.copyRev ? { id: state.id, rev: opts.copyRev, baseRev: null, dirty: true, at: opts.at || '', history: [] }
+            : { id: state.id, rev: newRev(), baseRev: old.baseRev || null, dirty: true, at: new Date().toISOString(), history: old.history || [] }, state.id);
+        };
+      }).then(() => sum);
     },
     get(id) { return DB.tx(['meets'], 'readonly', t => DB.req(t.objectStore('meets').get(id))); },
     list() { return DB.tx(['summaries'], 'readonly', t => DB.req(t.objectStore('summaries').getAll())); },
-    del(id) { return DB.tx(['meets', 'summaries'], 'readwrite', t => { t.objectStore('meets').delete(id); t.objectStore('summaries').delete(id); }); },
+    /** Delete a meet, leaving a tombstone so other computers delete it too. */
+    del(id, opts = {}) {
+      return DB.tx(['meets', 'summaries', 'sync'], 'readwrite', t => {
+        t.objectStore('meets').delete(id); t.objectStore('summaries').delete(id);
+        const ms = t.objectStore('sync'); const g = ms.get(id);
+        g.onsuccess = () => {
+          const old = g.result || {};
+          ms.put(opts.syncRev ? { id, deleted: true, rev: opts.syncRev, baseRev: opts.syncRev, dirty: false, at: opts.at || '', history: opts.history || [] }
+            : { id, deleted: true, rev: newRev(), baseRev: old.baseRev || null, dirty: !!old.baseRev, at: new Date().toISOString(), history: old.history || [] }, id);
+        };
+      });
+    },
     all() { return DB.tx(['meets'], 'readonly', t => DB.req(t.objectStore('meets').getAll())); },
+    getMeta(id) { return DB.tx(['sync'], 'readonly', t => DB.req(t.objectStore('sync').get(id))); },
+    putMeta(m) { return DB.tx(['sync'], 'readwrite', t => { t.objectStore('sync').put(m, m.id); }); },
+    allMeta() { return DB.tx(['sync'], 'readonly', t => DB.req(t.objectStore('sync').getAll())); },
   };
   function summarise(st) {
     return {
       id: st.id, title: st.settings.title, date: st.settings.date, venue: st.settings.venue,
       races: st.program.length, athletes: st.entries.length,
       finishers: Object.values(st.results || {}).reduce((a, r) => a + r.length, 0),
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(), conflictOf: st.conflictOf || '',
     };
   }
   async function refreshSummaries() { summaries = await DB.list(); summaries.sort(meetSort); }
@@ -122,6 +150,7 @@
       const sum = await saving;
       summaries = summaries.filter(x => x.id !== sum.id).concat(sum).sort(meetSort);
       if (snapshot === S) { dirty = false; renderChrome(); }
+      syncSoon();
     } catch (e) { toast('Could not save: ' + e.message, true); }
     finally { saving = null; }
   }
@@ -150,10 +179,192 @@
     render();
   }
 
+
+  // ================================================================ sync between computers (folder, e.g. OneDrive)
+  const isApp = !!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
+  const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+  const LS_SYNC = 'xcmm.sync';
+  const Sync = {
+    cfg: (() => { try { return JSON.parse(localStorage.getItem(LS_SYNC)) || {}; } catch (e) { return {}; } })(),
+    status: 'off', error: '', last: null, device: 'This computer', files: new Map(), running: false, again: false, soon: null,
+    note: '',
+  };
+  const saveSyncCfg = () => localStorage.setItem(LS_SYNC, JSON.stringify(Sync.cfg));
+  const syncOn = () => isApp && Sync.cfg.enabled && Sync.cfg.folder;
+  const backend = {
+    list: () => invoke('sync_list', { folder: Sync.cfg.folder }),
+    read: name => invoke('sync_read', { folder: Sync.cfg.folder, name }),
+    write: (name, contents) => invoke('sync_write', { folder: Sync.cfg.folder, name, contents }),
+    remove: name => invoke('sync_remove', { folder: Sync.cfg.folder, name }),
+  };
+  function syncSoon(ms = 2500) { if (!syncOn()) return; clearTimeout(Sync.soon); Sync.soon = setTimeout(() => syncNow(), ms); }
+  function setSync(status, error) { Sync.status = status; Sync.error = error || ''; renderChrome(); }
+  const hist = arr => [...new Set(arr.filter(Boolean))].slice(-60);
+  async function pushMeet(id, merged = []) {
+    const meta = await DB.getMeta(id);
+    if (!meta) return false;
+    const ancestors = hist([...(meta.history || []), ...merged]);
+    const base = { format: 'xc-meet-sync', v: 1, id, rev: meta.rev, ancestors, updatedAt: meta.at || new Date().toISOString(), device: Sync.device, app: APP_VERSION };
+    let doc;
+    if (meta.deleted) doc = { ...base, deleted: true };
+    else {
+      const st = await DB.get(id); if (!st) return false;
+      doc = { ...base, title: st.settings.title, date: st.settings.date, state: st };
+    }
+    await backend.write(id + '.json', JSON.stringify(doc));
+    Sync.files.delete(id + '.json');
+    const m2 = await DB.getMeta(id);
+    if (m2) await DB.putMeta({ ...m2, baseRev: meta.rev, history: hist([...ancestors, meta.rev]), dirty: m2.rev !== meta.rev });
+    return true;
+  }
+  const comparable = st => { const c = migrate(clone(st)); delete c.conflictOf; c.id = ''; c.entries = c.entries.map(({ uid, ...e }) => e); return X.stableStringify(c); };
+  async function sameContent(id, doc) {
+    if (!doc || !doc.state) return false;
+    const mine = await DB.get(id);
+    return !!mine && comparable(mine) === comparable(doc.state);
+  }
+  /** Keep a version that lost a conflict as its own meet, with an id/rev both computers agree on. */
+  async function keepCopy(state, origId, rev, device, at) {
+    const cid = `${origId}~${rev}`;
+    if (summaries.some(m => m.id === cid) || await DB.get(cid)) return false;
+    const st = migrate({ ...state, id: cid });
+    st.id = cid; st.conflictOf = origId;
+    st.settings.title = `${st.settings.title.replace(/ \(version from .*\)$/, '')} (version from ${device || 'the other computer'})`;
+    await DB.put(st, { copyRev: 'c' + rev, at });
+    return true;
+  }
+  async function syncNow() {
+    if (!syncOn()) return;
+    if (Sync.running) { Sync.again = true; return; }
+    Sync.running = true; Sync.again = false; setSync('syncing');
+    try {
+      await flushSave();
+      const files = await backend.list();
+      const seen = new Set();
+      for (const f of files) {
+        seen.add(f.name);
+        const c = Sync.files.get(f.name);
+        if (c && c.modified === f.modified && c.size === f.size) continue;
+        try {
+          const doc = JSON.parse(await backend.read(f.name));
+          if (doc && doc.format === 'xc-meet-sync' && doc.id && doc.rev) Sync.files.set(f.name, { modified: f.modified, size: f.size, doc });
+          else Sync.files.delete(f.name);
+        } catch (e) { Sync.files.delete(f.name); } // half-downloaded or not ours: try again next time
+      }
+      for (const k of [...Sync.files.keys()]) if (!seen.has(k)) Sync.files.delete(k);
+      const remotes = [...Sync.files.entries()].map(([file, { doc }]) => ({ file, id: doc.id, rev: doc.rev, deleted: !!doc.deleted, updatedAt: doc.updatedAt || '', ancestors: doc.ancestors || [] }));
+      const locals = new Map((await DB.allMeta()).map(m => [m.id, m]));
+      for (const sm of summaries) if (!locals.has(sm.id)) { const m = { id: sm.id, rev: newRev(), baseRev: null, dirty: true, at: sm.updatedAt || new Date().toISOString(), history: [] }; await DB.putMeta(m); locals.set(sm.id, m); }
+      const actions = X.planSync(locals, remotes);
+      Sync.log = (Sync.log || []).concat([{ at: new Date().toISOString(), locals: [...locals.values()].map(m => ({ id: m.id, rev: m.rev, baseRev: m.baseRev, dirty: m.dirty, deleted: m.deleted })), remotes: remotes.map(r => ({ file: r.file, rev: r.rev, anc: r.ancestors })), actions }]).slice(-30);
+      const docOf = file => (Sync.files.get(file) || {}).doc;
+      let openChange = '', fromDevice = '', pulled = 0, copies = 0;
+      const busyHere = () => { const a = document.activeElement; return !!($('#modal-root').children.length || (a && a !== document.body && a.closest && a.closest('#view') && a.matches('input,textarea,select'))); };
+      const unchanged = async id => {
+        if (S && S.id === id && (dirty || busyHere())) { Sync.again = true; return false; } // don't swap the meet out from under someone typing
+        const m = await DB.getMeta(id); const L = locals.get(id); return !L || !m || m.rev === L.rev;
+      };
+      for (const a of actions) {
+        const syncOpts = doc => ({ syncRev: doc.rev, at: doc.updatedAt || '', history: hist([...(doc.ancestors || []), doc.rev]) });
+        if (a.type === 'pull') {
+          const doc = docOf(a.file); if (!doc || !doc.state || !(await unchanged(a.id))) continue;
+          await DB.put(migrate({ ...doc.state, id: a.id }), syncOpts(doc)); pulled++;
+          if (S && S.id === a.id) { openChange = 'updated'; fromDevice = doc.device; }
+        } else if (a.type === 'deleteLocal' || a.type === 'tombstone') {
+          const doc = docOf(a.file) || { rev: a.rev };
+          if (!(await unchanged(a.id))) continue;
+          await DB.del(a.id, syncOpts(doc)); pulled++;
+          if (a.type === 'deleteLocal' && S && S.id === a.id) { openChange = 'deleted'; fromDevice = doc.device; }
+        } else if (a.type === 'copyRemote') {
+          const doc = docOf(a.file); if (!doc || doc.deleted || !doc.state) continue;
+          if (await sameContent(a.id, doc)) continue;
+          if (await keepCopy(doc.state, a.id, doc.rev, doc.device, doc.updatedAt)) { copies++; Sync.again = true; }
+        } else if (a.type === 'copyLocal') {
+          const mine = await DB.get(a.id); const meta = await DB.getMeta(a.id);
+          if (!(await unchanged(a.id))) continue;
+          if (await sameContent(a.id, docOf(a.file))) continue;
+          if (mine && meta && meta.rev === a.rev && await keepCopy(mine, a.id, a.rev, Sync.device, meta.at)) { copies++; Sync.again = true; }
+        } else if (a.type === 'push') {
+          await pushMeet(a.id, a.merged || []);
+        } else if (a.type === 'copy') {
+          const doc = docOf(a.from); if (doc) { await backend.write(a.to, JSON.stringify(doc)); Sync.files.delete(a.to); }
+        } else if (a.type === 'remove') {
+          await backend.remove(a.file); Sync.files.delete(a.file);
+        }
+      }
+      if (pulled || copies) await refreshSummaries();
+      if (openChange === 'updated') { const d = await DB.get(S.id); if (d) { S = migrate(d); cache = null; } toast(`This meet was updated with changes from ${fromDevice || 'your other computer'}`); }
+      if (openChange === 'deleted') { S = null; ui.tab = 'meets'; toast(`This meet was deleted on ${fromDevice || 'your other computer'}`); }
+      if (copies) toast(`${copies} meet${copies > 1 ? 's were' : ' was'} changed on both computers — both versions are kept on the Meets tab`);
+      Sync.last = new Date(); setSync('ok');
+      if (openChange || ((pulled || copies) && ui.tab === 'meets')) render();
+    } catch (e) {
+      setSync('error', String(e && e.message || e));
+    } finally {
+      Sync.running = false;
+      if (Sync.again) setTimeout(syncNow, 3000);
+    }
+  }
+  async function enableSync(folder) {
+    Sync.cfg = { ...Sync.cfg, enabled: true, folder, asked: true }; saveSyncCfg();
+    Sync.files.clear();
+    try {
+      await backend.write('README.txt', 'This folder keeps XC Meet Manager in sync between your computers.\r\nEach file is one meet. Please don\'t edit, rename or move these files.\r\n');
+    } catch (e) { setSync('error', String(e.message || e)); toast('Could not use that folder: ' + (e.message || e), true); return; }
+    await syncNow();
+    if (Sync.status === 'ok') toast('Sync is on');
+  }
+  async function chooseSyncFolder() {
+    const f = await invoke('pick_folder');
+    if (f) await enableSync(f);
+  }
+  function syncChipText() {
+    if (!isApp) return '';
+    if (!Sync.cfg.enabled) return '☁ Sync off';
+    if (Sync.status === 'syncing') return '☁ Syncing…';
+    if (Sync.status === 'error') return '⚠ Sync problem';
+    if (Sync.last) return '☁ Synced ' + Sync.last.toLocaleTimeString('en-IE', { hour: '2-digit', minute: '2-digit' });
+    return '☁ Sync on';
+  }
+  async function syncDialog() {
+    const def = await invoke('sync_default_folder').catch(() => null);
+    const on = Sync.cfg.enabled;
+    const body = `<p style="margin-top:0">Keep every meet the same on all your computers. Meets are saved to a folder in <b>OneDrive</b>, and OneDrive copies them between computers whenever there's internet.</p>
+      <ul class="small" style="line-height:1.6;padding-left:18px">
+        <li>No internet at the event? Keep working as normal — everything syncs once the laptop is back online and the app is opened.</li>
+        <li>Turn sync on with the <b>same folder</b> on each computer.</li>
+        <li>If the same meet is changed on both computers before they sync, both versions are kept so nothing is lost.</li>
+      </ul>
+      ${on ? `<div class="notice ${Sync.status === 'error' ? 'err' : ''}"><b>Sync is on</b> · ${esc(Sync.device)}<br><span class="small">Folder: ${esc(Sync.cfg.folder)}</span><br><span class="small">${Sync.status === 'error' ? 'Problem: ' + esc(Sync.error) : Sync.last ? 'Last synced ' + esc(Sync.last.toLocaleString('en-IE')) : ''}</span></div>`
+        : def ? `<div class="notice">OneDrive folder found:<br><b class="small">${esc(def)}</b></div>` : `<div class="notice warn">OneDrive wasn't found on this computer. Sign in to OneDrive first, or choose any folder that's shared between your computers.</div>`}`;
+    modal('Sync between computers', body, {
+      footer: on ? `<button class="btn danger" data-off>Turn sync off</button><span class="spacer"></span><button class="btn" data-pick>Change folder…</button><button class="btn primary" data-now>Sync now</button>`
+        : `<button class="btn" data-later>Not now</button><span class="spacer"></span><button class="btn" data-pick>Choose a folder…</button>${def ? '<button class="btn primary" data-on>Turn on sync with OneDrive</button>' : ''}`,
+      onMount: m => {
+        const b = sel => $(sel, m.el);
+        if (b('[data-off]')) b('[data-off]').onclick = () => { Sync.cfg.enabled = false; saveSyncCfg(); setSync('off'); m.close(); toast('Sync is off on this computer'); };
+        if (b('[data-now]')) b('[data-now]').onclick = async () => { m.close(); await syncNow(); if (Sync.status === 'ok') toast('Synced'); };
+        if (b('[data-pick]')) b('[data-pick]').onclick = async () => { m.close(); await chooseSyncFolder(); };
+        if (b('[data-on]')) b('[data-on]').onclick = async () => { m.close(); await enableSync(def); };
+        if (b('[data-later]')) b('[data-later]').onclick = () => { Sync.cfg.asked = true; saveSyncCfg(); m.close(); };
+      },
+      onClose: () => { if (!Sync.cfg.asked) { Sync.cfg.asked = true; saveSyncCfg(); } },
+    });
+  }
+  async function startSync() {
+    if (!isApp) return;
+    Sync.device = await invoke('device_name').catch(() => 'This computer');
+    setInterval(() => syncNow(), 15000);
+    window.addEventListener('focus', () => syncSoon(300));
+    if (syncOn()) { await syncNow(); return; }
+    if (!Sync.cfg.asked) syncDialog();
+  }
+
   // ================================================================ files
   const fileTypes = [{ description: 'XC Meet file', accept: { 'application/json': ['.json'] } }];
   const safeName = s => (s || 'meet').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'meet';
   async function saveJson(name, data) {
+    if (isApp) { download(name, data, 'application/json'); return; }
     if (window.showSaveFilePicker) {
       try {
         const h = await window.showSaveFilePicker({ suggestedName: name, types: fileTypes });
@@ -204,6 +415,14 @@
   }
   function download(name, data, type) {
     const blob = data instanceof Blob ? data : new Blob([data], { type: type || 'application/octet-stream' });
+    if (isApp) {
+      const r = new FileReader();
+      r.onload = async () => {
+        try { const path = await invoke('save_file', { name, contentsB64: String(r.result).split(',')[1] || '' }); if (path) toast('Saved ' + path); }
+        catch (e) { toast('Could not save: ' + (e.message || e), true); }
+      };
+      r.readAsDataURL(blob); return;
+    }
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
@@ -290,6 +509,8 @@
       be.className = 'badge' + (errs ? ' err' : '');
     } else be.textContent = '';
     $('#badge-meets').textContent = summaries.length || '';
+    const chip = $('#sync-chip');
+    if (chip) { chip.hidden = !isApp; chip.textContent = syncChipText(); chip.className = 'btn ghost sync-chip ' + (Sync.status === 'error' && Sync.cfg.enabled ? 'err' : ''); chip.title = Sync.cfg.enabled ? (Sync.error || 'Syncing via ' + Sync.cfg.folder) : 'Set up sync between computers'; }
     document.title = S ? S.settings.title + ' — XC Meet Manager' : 'XC Meet Manager';
   }
   function render() {
@@ -316,7 +537,7 @@
     const lastBackup = localStorage.getItem(LS_BACKUP);
     const row = m => `<tr class="clickable${S && S.id === m.id ? ' current' : ''}" data-meet="${esc(m.id)}">
         <td style="white-space:nowrap"><b>${esc(fmtDate(m.date) || '—')}</b></td>
-        <td><b>${esc(m.title)}</b>${S && S.id === m.id ? ' <span class="pill ok">open</span>' : ''}<div class="small muted">${esc(m.venue || '')}</div></td>
+        <td><b>${esc(m.title)}</b>${S && S.id === m.id ? ' <span class="pill ok">open</span>' : ''}${m.conflictOf ? ' <span class="pill warn" title="This meet was changed on both computers before they synced. This is the earlier of the two versions, kept so nothing is lost.">kept copy</span>' : ''}<div class="small muted">${esc(m.venue || '')}</div></td>
         <td class="num">${m.races}</td><td class="num">${m.athletes}</td><td class="num">${m.finishers}</td>
         <td class="small muted" style="white-space:nowrap">${esc(new Date(m.updatedAt).toLocaleString('en-IE', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</td>
         <td style="white-space:nowrap" data-nosel><button class="btn small primary" data-act="meet-open" data-id="${esc(m.id)}">Open</button> <button class="btn small" data-act="meet-copy" data-id="${esc(m.id)}" title="Start a new meet with the same races and settings">Copy as new…</button> <button class="btn small" data-act="meet-export" data-id="${esc(m.id)}" title="Save this meet to a file">Export</button> <button class="btn small danger" data-act="meet-del" data-id="${esc(m.id)}" title="Delete">✕</button></td>
@@ -329,6 +550,8 @@
         <button class="btn small" data-act="meet-import">Import meet file…</button>
         <button class="btn small" data-act="meet-backup" ${summaries.length ? '' : 'disabled'}>Back up all meets</button>
         <span class="small muted">${lastBackup ? 'Last backup ' + esc(new Date(lastBackup).toLocaleDateString('en-IE', { day: 'numeric', month: 'short', year: 'numeric' })) : summaries.length ? 'Not backed up yet' : ''}</span></div>
+      ${summaries.some(m => m.conflictOf) ? `<div class="notice warn"><b>Some meets were changed on both computers before they could sync.</b> The later version is kept as normal and the earlier one is kept too, marked <span class="pill warn">kept copy</span>. Check them, then delete the one you don't need.</div>` : ''}
+      ${isApp && !Sync.cfg.enabled ? `<div class="notice small">☁ Use this on more than one computer? <a href="#" data-act="sync-open">Turn on sync with OneDrive</a> to keep your meets the same everywhere.</div>` : ''}
       ${!summaries.length ? `<div class="card empty"><p style="font-size:17px;margin-top:0">No meets yet</p><p>Create your first meet — just give it a name and date.</p>
           <div class="row" style="justify-content:center"><button class="btn primary" data-act="meet-new">+ New meet</button><button class="btn" data-act="meet-import-xlsx">Import an Excel meet workbook…</button><button class="btn" data-act="load-sample">Add an example meet to try it out</button><button class="btn" data-act="meet-import">Import meet file…</button></div></div>`
         : !list.length ? '<div class="card empty">No meets match your search.</div>' : `
@@ -1356,12 +1579,13 @@
     async 'meet-export-cur'() { await flushSave(); exportMeetFile(S); },
     'meet-import'() { pickImportMeet(); },
     'meet-import-xlsx'() { pickWorkbook(); },
+    'sync-open'() { syncDialog(); },
     'meet-backup'() { backupAll(); },
     async 'meet-del'(el) {
       const m = summaries.find(x => x.id === el.dataset.id); if (!m) return;
       if (!confirm(`Delete “${m.title}”${m.date ? ' (' + fmtDate(m.date) + ')' : ''}?\n\nIts ${m.athletes} athletes and ${m.finishers} results will be removed. This can't be undone — export it first if you might need it.`)) return;
       if (S && S.id === m.id) { clearTimeout(saveTimer); S = null; dirty = false; localStorage.removeItem(LS_LAST); }
-      await DB.del(m.id); await refreshSummaries(); ui.tab = 'meets'; render(); toast('Deleted ' + m.title);
+      await DB.del(m.id); await refreshSummaries(); ui.tab = 'meets'; render(); toast('Deleted ' + m.title); syncSoon(500);
     },
     'meet-del-cur'(el) { actions['meet-del']({ dataset: { id: S.id } }); },
     async 'load-sample'() {
@@ -1497,7 +1721,8 @@
       $('#view').innerHTML = `<div class="wrap"><div class="notice err">Could not open the meets database: ${esc(e.message || e)}. Make sure you open the app with the launcher.</div></div>`;
       return;
     }
-    window.XCApp = { get state() { return S; }, actions, ui, render, importDialog, get summaries() { return summaries; }, flushSave };
+    window.XCApp = { get state() { return S; }, actions, ui, render, importDialog, get summaries() { return summaries; }, flushSave, syncNow, Sync };
     render();
+    startSync();
   })();
 })();
