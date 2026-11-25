@@ -68,7 +68,7 @@ npx @tauri-apps/cli@2 dev     # run the Windows app from source (needs Rust)
 npx @tauri-apps/cli@2 build   # build the installer locally
 ```
 
-Re-run `build.py` after editing anything in `src/` or `data/`, and commit the rebuilt `app/XC-Meet-Manager.html`. Pushing to `main` builds the installer as a workflow artifact. Pushing a tag like `v1.3.1` publishes a release (bump the version in `src-tauri/tauri.conf.json` and `Cargo.toml` first).
+Re-run `build.py` after editing anything in `src/` or `data/`, and commit the rebuilt `app/XC-Meet-Manager.html`. Pushing to `main` builds the installer as a workflow artifact. To publish a release, bump the version in `src-tauri/tauri.conf.json` and `Cargo.toml`, then either push a tag like `v1.3.1`, or go to **Actions → Windows app → Run workflow** and tick *Publish a GitHub release*.
 
 To refresh the reference data from a newer workbook:
 
