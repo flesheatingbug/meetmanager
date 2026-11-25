@@ -2,7 +2,7 @@
 
 A Windows-first app for running cross-country and road-race athletics meets. It replaces the Munster Athletics *Horse & Jockey* Excel workbook (`.xlsm`), so you no longer need Excel or macros.
 
-It's a single offline HTML file that opens in its own Microsoft Edge window. There's nothing to install, and it also runs on Linux.
+It's a Windows app that works offline and keeps meets in sync between computers through OneDrive. The same app also runs as a single HTML file in Edge or Chrome on any OS, but without sync.
 
 ## Features
 
@@ -15,21 +15,38 @@ It's a single offline HTML file that opens in its own Microsoft Edge window. The
 - **Results**: type bib numbers in finishing order, or paste the timing system's list. Unknown numbers, duplicates and wrong-race runners are flagged.
 - **Scoring**: club, county, province and masters teams, with optional B/C teams. Team size is set per age category. Lowest total wins, and ties are split by the last scoring runner.
 - **Export**: everything goes to a real `.xlsx`, and you can back up all meets to one file.
+- **Sync between computers** (Windows app): meets are mirrored to a OneDrive folder. It works offline at events and catches up when back online. If the same meet is edited on two computers, nothing is lost: the later version wins and the earlier one is kept as a copy.
 
-## Using it (Windows)
+## Installing (Windows)
 
-1. Download the [`app`](app/) folder (or the repo as a ZIP) and put it somewhere permanent.
-2. Double-click **`Start XC Meet Manager.bat`**. It opens in its own Edge or Chrome window.
-3. Optional: run **`Create desktop shortcut.bat`** to get a desktop icon.
+Download the installer (`XC Meet Manager_…_x64-setup.exe`) from the [latest release](https://github.com/flesheatingbug/meetmanager/releases/latest) and run it. It installs per user, so no admin rights are needed. The installer isn't code-signed, so SmartScreen may warn: choose **More info → Run anyway**.
 
-Meets are stored with the app's window (IndexedDB in a dedicated browser profile under `%LOCALAPPDATA%\XCMeetManager`). Always open the app with the launcher or shortcut. Use **Back up all meets** after each meet.
+When it first opens, it offers to sync through OneDrive. Turn it on with the same folder on every computer.
 
-On Linux, run `app/start-linux.sh`. It uses Edge, Chrome, Chromium or Brave.
+**Moving from the browser version (v1.0–1.2):** in the old version use **Meets → Back up all meets**, then in the app use **Meets → Import meet file…**. Do this on one computer and sync brings it to the others.
+
+### Browser version (no install, no sync)
+
+The [`app`](app/) folder still works on its own. Run `Start XC Meet Manager.bat` (Windows) or `start-linux.sh`. Meets are stored in that browser window's profile, so use **Back up all meets** regularly.
+
+## How sync works
+
+Each meet is one file, `<id>.json`, in the sync folder. The app's own local database is always the main copy, so nothing depends on the folder being reachable. Every save gets a new revision ID, and each file records the revisions it was built from. When the app runs (at start, every 15 s, and after changes), it compares the two sides:
+
+- **Folder version builds on ours**: take it. The open meet updates live, but not while someone is typing.
+- **Ours is newer**: write it to the folder.
+- **Edited separately on both computers** (e.g. laptop offline at an event): the later edit becomes the meet, and the earlier one becomes a separate *kept copy* meet. Both computers reach the same result independently.
+- **Deleted on one computer**: deleted on the other too, unless it was edited there in the meantime (edits beat deletes).
+- **Extra copies left by OneDrive** (`<id>-LAPTOP.json`): read, resolved and tidied away.
+
+The rules are in `planSync()` in `src/core.js`, with tests in `tests/run.js`.
 
 ## Project layout
 
 ```
-app/        Ready-to-run app: XC-Meet-Manager.html + launchers + user README
+app/        Browser version: XC-Meet-Manager.html + launchers + user README
+src-tauri/  Windows app shell (Tauri 2, Rust): sync-folder access, Save dialogs
+.github/    CI: builds the Windows installer; tags v* publish a release
 src/        Source: index.html (shell), styles.css, core.js (logic), app.js (UI)
 data/       seed.json (age categories, team sizes, clubs, counties)
             sample-event.json (example meet, names replaced with made-up ones)
@@ -45,11 +62,13 @@ build.py    Inlines src/ + data/ into app/XC-Meet-Manager.html
 ## Development
 
 ```sh
-python build.py        # rebuild app/XC-Meet-Manager.html
+python build.py        # rebuild app/XC-Meet-Manager.html and tauri-dist/
 node tests/run.js      # run the tests
+npx @tauri-apps/cli@2 dev     # run the Windows app from source (needs Rust)
+npx @tauri-apps/cli@2 build   # build the installer locally
 ```
 
-Then open `app/XC-Meet-Manager.html` in Edge or Chrome. Re-run `build.py` after editing anything in `src/` or `data/`, and commit the rebuilt HTML.
+Re-run `build.py` after editing anything in `src/` or `data/`, and commit the rebuilt `app/XC-Meet-Manager.html`. Pushing to `main` builds the installer as a workflow artifact. Pushing a tag like `v1.3.1` publishes a release (bump the version in `src-tauri/tauri.conf.json` and `Cargo.toml` first).
 
 To refresh the reference data from a newer workbook:
 

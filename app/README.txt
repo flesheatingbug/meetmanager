@@ -1,4 +1,4 @@
-XC MEET MANAGER  v1.2
+XC MEET MANAGER  v1.3 (browser version)
 =====================
 A Windows app for running cross-country and road-race meets. It does what the
 "DAY 1 Horse & Jockey" Excel workbook does, without macros or Excel:
@@ -12,6 +12,10 @@ A Windows app for running cross-country and road-race meets. It does what the
   - Results by bib number in finishing order, or paste the timing system's list
   - Club, county, province and masters team scoring, B/C teams optional
   - Export everything to Excel
+
+THERE IS NOW A PROPER WINDOWS APP that also syncs meets between computers
+through OneDrive: https://github.com/flesheatingbug/meetmanager/releases
+This folder is the no-install browser version (no sync).
 
 GETTING STARTED (Windows)
   1. Unzip this folder somewhere permanent, e.g. Documents\XC Meet Manager.
