@@ -909,16 +909,157 @@ table.meets-table td{padding:8px}
         }
         rows[ri] = [...r].map(x => x == null ? '' : x);
       }
-      out.push({ name: sh.getAttribute('name'), rows: [...rows].map(r => r || []) });
+      out.push({ name: sh.getAttribute('name'), state: sh.getAttribute('state') || 'visible', rows: [...rows].map(r => r || []) });
     }
     return out;
+  }
+
+
+  // ---------------------------------------------------------------- full workbook import (Horse & Jockey style .xlsm)
+  const fixWb = v => typeof v === 'string'
+    ? norm(v).replace('JUnder nior', 'Junior').replace('IUnder AA', 'IUAA').replace('JUnder N', 'JUN').replace(/^SEnior/, 'Senior').replace('U11Girls', 'U11 Girls')
+    : v;
+  const serialDate = v => {
+    if (typeof v === 'number' && v > 1000 && v < 80000) return new Date(Date.UTC(1899, 11, 30) + Math.round(v * 86400000));
+    const iso = parseDate(v); return iso ? new Date(iso + 'T00:00:00Z') : null;
+  };
+  function wbTime(v, clock) {
+    if (v == null || v === '') return '';
+    if (typeof v === 'number') {
+      if (clock && Number.isInteger(v) && v >= 0 && v < 24) return String(v).padStart(2, '0') + ':00';
+      const frac = v % 1 === 0 && !clock ? null : v % 1;
+      if (frac == null) return '';
+      let secs = Math.round(frac * 86400 * 100) / 100;
+      const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), sec = secs % 60;
+      if (clock) return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      const ss = (Math.round(sec * 100) / 100).toFixed(sec % 1 ? 2 : 0).padStart(sec % 1 ? 5 : 2, '0');
+      return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+    }
+    const t = norm(v);
+    return /^\d{1,2}:\d{2}(:\d{2})?([.,]\d+)?$/.test(t) ? t : '';
+  }
+  /** Is this a meet workbook (has Program + Entries sheets)? */
+  function isMeetWorkbook(sheets) {
+    const names = new Set(sheets.map(s => s.name.toLowerCase()));
+    return names.has('entries') && names.has('program');
+  }
+  /**
+   * Convert a Horse & Jockey style workbook (from readXlsx) to a meet.
+   * Returns {meet, report} where meet has settings, program, entries, results, and reference data.
+   */
+  function importWorkbook(sheets) {
+    const by = new Map(sheets.map(s => [s.name.toLowerCase(), s]));
+    const rowsOf = n => (by.get(n) || { rows: [] }).rows;
+    const report = { warnings: [], lateEntries: [] };
+    // --- intro
+    const intro = {};
+    for (const r of rowsOf('intro')) if (r && r[0]) intro[lc(r[0])] = r[1];
+    const dateObj = serialDate(intro['date']);
+    const date = dateObj ? dateObj.toISOString().slice(0, 10) : '';
+    const year = +intro['year of competition'] || (dateObj ? dateObj.getUTCFullYear() : new Date().getFullYear());
+    const level = ['Club', 'County', 'Provincial', 'National'].find(x => lc(x) === lc(intro['competition region level'])) || 'Provincial';
+    const settings = {
+      title: fixWb(intro['event'] || '').replace(/\s+,/g, ',') || 'Imported meet', venue: fixWb(intro['venue'] || ''), date,
+      time: wbTime(intro['time'], true), year, startId: +intro['starting id number'] || 1,
+      autoNumber: lc(intro['auto id number']) !== 'manual', regionLevel: level, region: fixWb(intro['competition region'] || ''),
+    };
+    // --- age categories
+    const num = v => (typeof v === 'number' ? v : +v) || 0;
+    const ageCategories = [];
+    const cc = rowsOf('config_ccrr');
+    for (let i = 1; i < cc.length; i++) {
+      const r = cc[i] || []; const name = fixWb(r[0]);
+      if (!name || /^=|#REF/i.test(name) || ageCategories.some(c => c.name === name)) continue;
+      const age = typeof r[3] === 'number' ? r[3] : null;
+      const rule = v => { const d = serialDate(v); return d && age != null ? { yearOffset: d.getUTCFullYear() - year + age, month: d.getUTCMonth() + 1, day: d.getUTCDate() } : null; };
+      const c = {
+        name, code: fixWb(r[1]) || '', gender: ['M', 'W'].includes(norm(r[2])) ? norm(r[2]) : '', age,
+        dobFrom: rule(r[4]), dobTo: rule(r[5]), ccDistance: norm(r[6]), rrDistance: norm(r[7]),
+        cc: { club: num(r[8]), clubMulti: !!num(r[9]), county: num(r[10]), countyMulti: !!num(r[11]), province: num(r[12]), provinceMulti: !!num(r[13]) },
+        rr: { club: num(r[14]), clubMulti: !!num(r[15]), county: num(r[16]), countyMulti: !!num(r[17]), province: num(r[18]), provinceMulti: !!num(r[19]) },
+        noOwnRanking: false, scoresIn: [],
+      };
+      if (/^(novice & u23|senior & novice) (men|women)$/i.test(name)) { c.noOwnRanking = true; c.scoresIn = ['*']; }
+      else if (/^intermediate & masters/i.test(name)) { c.noOwnRanking = true; c.scoresIn = [name.replace(/^intermediate & /i, '')]; }
+      ageCategories.push(c);
+    }
+    // --- clubs, masters team categories
+    const teams = [], seenTeam = new Set(), mastersTeamCategories = [];
+    const ct = rowsOf('config_team');
+    for (let i = 1; i < ct.length; i++) {
+      const r = ct[i] || [];
+      const name = fixWb(r[0]);
+      if (name && !seenTeam.has(name)) { seenTeam.add(name); teams.push({ name, code: norm(r[1]), county: fixWb(r[2]) || '', province: fixWb(r[3]) || '' }); }
+      const m = fixWb(r[9]); if (m && !mastersTeamCategories.includes(m)) mastersTeamCategories.push(m);
+    }
+    // --- program
+    const program = [];
+    const pr = rowsOf('program');
+    for (let i = 1; i < pr.length; i++) {
+      const r = pr[i] || [];
+      if (r[0] === '' || r[0] == null || !r[1]) continue;
+      const number = typeof r[0] === 'number' ? r[0] : norm(r[0]);
+      let ev = program.find(p => String(p.number) === String(number));
+      if (!ev) { ev = { number, categories: [], type: lc(r[2]) === 'rr' ? 'RR' : 'CC', distance: norm(r[3]), time: wbTime(r[4], true) }; program.push(ev); }
+      const cat = fixWb(r[1]); if (!ev.categories.includes(cat)) ev.categories.push(cat);
+    }
+    // --- entries
+    const entries = [], idSeen = new Set();
+    const en = rowsOf('entries');
+    for (let i = 1; i < en.length; i++) {
+      const r = en[i] || [];
+      if (!norm(r[2])) continue;
+      const d = r[4] !== '' && r[4] != null ? serialDate(r[4]) : null;
+      const e = {
+        id: typeof r[0] === 'number' ? r[0] : (/^\d+$/.test(norm(r[0])) ? +norm(r[0]) : null),
+        name: fixWb(r[2]), category: fixWb(r[3]) || '', dob: d ? d.toISOString().slice(0, 10) : '', reg: norm(r[5]),
+        team: fixWb(r[6]) || '', scoringTeam: fixWb(r[7]) || '', county: fixWb(r[8]) || '', province: fixWb(r[9]) || '',
+        mastersTeam: fixWb(r[12]) || '', mastersCountyTeam: fixWb(r[13]) || '',
+      };
+      if (e.scoringTeam === e.team) e.scoringTeam = '';
+      entries.push(e); if (e.id != null) idSeen.add(String(e.id));
+    }
+    // --- results sheets
+    const results = {}; const resultSheets = [];
+    for (const sh of sheets) {
+      if (!/^results /i.test(sh.name) || sh.state !== 'visible') continue;
+      const label = fixWb(sh.name.slice(8));
+      const firstCat = fixWb((sh.rows[1] || [])[8]);
+      let ev = program.find(p => p.categories.includes(label))
+        || program.find(p => p.categories.some(c => c.startsWith(label) || label.startsWith(c)))
+        || (firstCat && program.find(p => p.categories.includes(firstCat)));
+      if (!ev) { report.warnings.push(`Sheet “${sh.name}” doesn't match a race on the program — skipped`); continue; }
+      const order = [];
+      for (let i = 1; i < sh.rows.length; i++) {
+        const r = sh.rows[i] || [];
+        if (r[0] === '' || r[0] == null) break;
+        const id = String(typeof r[0] === 'number' ? r[0] : norm(r[0]));
+        order.push({ id, time: wbTime(r[1], false) });
+        if (!idSeen.has(id) && norm(r[3]) && /^\d+$/.test(id)) {
+          const cat = fixWb(r[8]) || (ev.categories.length === 1 ? ev.categories[0] : '');
+          const late = { id: +id, name: fixWb(r[3]), category: cat, dob: '', reg: '', team: fixWb(r[4]) || '', scoringTeam: fixWb(r[5]) || '', county: fixWb(r[6]) || '', province: '', mastersTeam: '', mastersCountyTeam: '', late: true };
+          if (late.scoringTeam === late.team) late.scoringTeam = '';
+          report.lateEntries.push(late); idSeen.add(id);
+        }
+      }
+      const key = String(ev.number);
+      if (!results[key] || order.length > results[key].length) results[key] = order;
+      resultSheets.push(sh.name);
+    }
+    const counties = [...new Set([...teams.map(t => t.county), ...entries.map(e => e.county)].filter(Boolean))].sort();
+    const provinces = [...new Set(['Connacht', 'Leinster', 'Munster', 'Ulster', ...teams.map(t => t.province), ...entries.map(e => e.province)].filter(Boolean))].sort();
+    Object.assign(report, {
+      races: program.length, athletes: entries.length, finishers: Object.values(results).reduce((a, r) => a + r.length, 0),
+      resultSheets: resultSheets.length, categories: ageCategories.length, clubs: teams.length,
+    });
+    return { meet: { settings, program, entries, results, ageCategories, teams, mastersTeamCategories, counties, provinces }, report };
   }
 
   root.XC = {
     norm, lc, levenshtein, clubKey, clubCore, makeClubMatcher, parseGender, catTokens, makeCategoryMatcher,
     catDobRange, categoryFromDob, parseDate, formatName, splitFullName, titleCase, parseDelimited, parseCSV,
     parseHtmlTables, FIELDS, headerField, detectColumns, rowsToRecords, computeTeams, scoreEvent, validate,
-    buildXlsx, readXlsx, crc32, colName,
+    buildXlsx, readXlsx, crc32, colName, isMeetWorkbook, importWorkbook, wbTime,
   };
   if (typeof module !== 'undefined') module.exports = root.XC;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -1250,11 +1391,12 @@ table.meets-table td{padding:8px}
     return `<div class="row" style="align-items:flex-end;margin-bottom:12px"><div><h2>Meets</h2><p class="sub" style="margin:0">Every meet is kept here. Click one to open it — older meets stay available to look back at, reprint or copy.</p></div><span class="spacer"></span>
         <button class="btn primary" data-act="meet-new" style="font-size:15px;padding:9px 18px">+ New meet</button></div>
       <div class="toolbar"><input type="search" id="meet-q" placeholder="Search meets…" value="${esc(ui.meetQ)}" style="width:240px"><span class="spacer"></span>
+        <button class="btn small" data-act="meet-import-xlsx" title="Import a whole meet from an Excel meet workbook (.xlsm / .xlsx)">Import Excel workbook…</button>
         <button class="btn small" data-act="meet-import">Import meet file…</button>
         <button class="btn small" data-act="meet-backup" ${summaries.length ? '' : 'disabled'}>Back up all meets</button>
         <span class="small muted">${lastBackup ? 'Last backup ' + esc(new Date(lastBackup).toLocaleDateString('en-IE', { day: 'numeric', month: 'short', year: 'numeric' })) : summaries.length ? 'Not backed up yet' : ''}</span></div>
       ${!summaries.length ? `<div class="card empty"><p style="font-size:17px;margin-top:0">No meets yet</p><p>Create your first meet — just give it a name and date.</p>
-          <div class="row" style="justify-content:center"><button class="btn primary" data-act="meet-new">+ New meet</button><button class="btn" data-act="load-sample">Add an example meet to try it out</button><button class="btn" data-act="meet-import">Import meet file…</button></div></div>`
+          <div class="row" style="justify-content:center"><button class="btn primary" data-act="meet-new">+ New meet</button><button class="btn" data-act="meet-import-xlsx">Import an Excel meet workbook…</button><button class="btn" data-act="load-sample">Add an example meet to try it out</button><button class="btn" data-act="meet-import">Import meet file…</button></div></div>`
         : !list.length ? '<div class="card empty">No meets match your search.</div>' : `
         ${upcoming.length ? `<h3>Upcoming</h3>${table(upcoming)}` : ''}
         ${[...byYear.entries()].map(([y, ms]) => `<h3>${esc(y)}</h3>${table(ms)}`).join('')}`}`;
@@ -1264,6 +1406,74 @@ table.meets-table td{padding:8px}
     if (q) q.oninput = () => { ui.meetQ = q.value; const p = q.selectionStart; render(); const q2 = $('#meet-q'); q2.focus(); q2.setSelectionRange(p, p); };
     $$('tr[data-meet]').forEach(tr => tr.addEventListener('click', e => { if (!e.target.closest('[data-nosel]')) openMeet(tr.dataset.meet); }));
   }
+  /** A blank meet whose clubs/categories/spellings come from the most recently changed meet (or the saved default). */
+  async function baseState() {
+    const st = blankState();
+    const recent = [...summaries].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
+    const refSrc = recent ? await DB.get(recent.id) : null;
+    if (refSrc && !localStorage.getItem(LS_REF)) for (const k of ['ageCategories', 'mastersTeamCategories', 'teams', 'counties', 'provinces', 'aliases']) if (refSrc[k]) st[k] = clone(refSrc[k]);
+    return st;
+  }
+
+  // ---------------------------------------------------------------- import a whole meet workbook (.xlsm)
+  function pickWorkbook() {
+    const inp = $('#file-import');
+    inp.value = '';
+    inp.onchange = async () => {
+      const f = inp.files[0]; if (!f) return;
+      try {
+        toast('Reading ' + f.name + '…');
+        const sheets = await X.readXlsx(await f.arrayBuffer());
+        if (!X.isMeetWorkbook(sheets)) { toast(f.name + ' has no Program and Entries sheets — use “Paste athletes” or “Import file” on the Athletes tab instead', true); return; }
+        workbookDialog(sheets, f.name);
+      } catch (e) { toast('Could not read ' + f.name + ': ' + e.message, true); }
+    };
+    inp.click();
+  }
+  function workbookDialog(sheets, fileLabel) {
+    const { meet, report } = X.importWorkbook(sheets);
+    const st0 = meet.settings;
+    const dupe = summaries.find(m => X.lc(m.title) === X.lc(st0.title) && m.date === st0.date);
+    const lateN = report.lateEntries.length;
+    const body = `<p class="small muted" style="margin-top:0">From <b>${esc(fileLabel)}</b></p>
+      <div class="row" style="margin-bottom:12px">
+        <div class="stat"><b>${report.races}</b><span>races</span></div><div class="stat"><b>${report.athletes}</b><span>athletes</span></div>
+        <div class="stat"><b>${report.finishers}</b><span>finishers on ${report.resultSheets} results sheets</span></div>
+        <div class="stat"><b>${report.clubs}</b><span>clubs</span></div><div class="stat"><b>${report.categories}</b><span>age categories</span></div>
+      </div>
+      <div class="form-grid" style="grid-template-columns:2fr 1fr">
+        <label class="f">Meet name<input type="text" name="title" value="${esc(st0.title)}"></label>
+        <label class="f">Date<input type="date" name="date" value="${esc(st0.date)}"></label>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+        <label class="chk"><input type="checkbox" name="ref" ${report.categories && report.clubs ? 'checked' : 'disabled'}> Use this workbook's clubs, age categories and team sizes ${report.categories && report.clubs ? '' : '<span class="muted small">(none found in the workbook)</span>'}</label>
+        ${lateN ? `<label class="chk"><input type="checkbox" name="late" checked> Add ${lateN} athlete${lateN > 1 ? 's who only appear' : ' who only appears'} on the results sheets (late entries)</label>
+          <div class="small muted" style="margin:-4px 0 0 24px">${report.lateEntries.slice(0, 6).map(e => `#${esc(e.id)} ${esc(e.name)} (${esc(e.category || '?')})`).join(', ')}${lateN > 6 ? ', …' : ''}</div>` : ''}
+      </div>
+      ${report.warnings.length ? `<div class="notice warn small" style="margin-top:12px">${report.warnings.map(esc).join('<br>')}</div>` : ''}
+      ${dupe ? `<div class="notice warn small" style="margin-top:12px">You already have “${esc(dupe.title)}” on ${esc(fmtDate(dupe.date))}. Importing creates a second copy — the existing one isn't changed.</div>` : ''}
+      <p class="small muted" style="margin-bottom:0">Nothing in the workbook is changed. After importing, the Athletes tab shows anything that needs checking.</p>`;
+    modal('Import meet workbook', body, {
+      wide: true, footer: '<button class="btn" data-c>Cancel</button><button class="btn primary" data-ok>Import as a new meet</button>', onMount: m => {
+        const f = n => $(`[name=${n}]`, m.body);
+        $('[data-c]', m.el).onclick = m.close;
+        $('[data-ok]', m.el).onclick = async () => {
+          const st = await baseState();
+          if (f('ref').checked) for (const k of ['ageCategories', 'teams', 'mastersTeamCategories', 'counties', 'provinces']) if (meet[k] && meet[k].length) st[k] = meet[k];
+          // make sure categories / counties used by the workbook exist even when keeping current reference data
+          for (const c of meet.counties) if (!st.counties.includes(c)) st.counties.push(c);
+          Object.assign(st.settings, meet.settings, { title: f('title').value.trim() || meet.settings.title, date: f('date').value || meet.settings.date });
+          st.program = meet.program; st.results = meet.results;
+          const entries = [...meet.entries, ...(lateN && f('late').checked ? report.lateEntries : [])];
+          const done = migrate({ ...st, entries });
+          m.close();
+          await addMeet(done, 'entries');
+          toast(`Imported “${done.settings.title}”: ${done.entries.length} athletes, ${report.finishers} finishers`);
+        };
+      },
+    });
+  }
+
   async function newMeetDialog(copyFromId) {
     await flushSave();
     const today = new Date().toISOString().slice(0, 10);
@@ -1287,11 +1497,7 @@ table.meets-table td{padding:8px}
         const go = async () => {
           const title = f('title').value.trim(), date = f('date').value, venue = f('venue').value.trim(), from = f('from').value;
           if (!title) { toast('Give the meet a name', true); f('title').focus(); return; }
-          const st = blankState();
-          // reference data from the most recently changed meet
-          const recent = [...summaries].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
-          const refSrc = recent ? await DB.get(recent.id) : null;
-          if (refSrc && !localStorage.getItem(LS_REF)) for (const k of ['ageCategories', 'mastersTeamCategories', 'teams', 'counties', 'provinces', 'aliases']) if (refSrc[k]) st[k] = clone(refSrc[k]);
+          const st = await baseState();
           if (from) {
             const t = migrate(await DB.get(from));
             st.program = clone(t.program);
@@ -1851,6 +2057,8 @@ table.meets-table td{padding:8px}
       try {
         if (/\.(xlsx|xlsm)$/i.test(f.name)) {
           const sheets = await X.readXlsx(await f.arrayBuffer());
+          if (X.isMeetWorkbook(sheets) && confirm(`${f.name} looks like a complete meet workbook (it has Program and Entries sheets).\n\nOK — import it as a NEW meet, with its races, athletes and results.\nCancel — just add its athletes to this meet.`)) { workbookDialog(sheets, f.name); return; }
+          if (X.isMeetWorkbook(sheets)) { const en = sheets.find(sh => sh.name.toLowerCase() === 'entries'); cb(en.rows, f.name + ' — Entries'); return; }
           const rows = [];
           for (const sh of sheets) {
             if (!sh.rows.some(r => r.some(c => c !== ''))) continue;
@@ -2213,6 +2421,7 @@ table.meets-table td{padding:8px}
     async 'meet-export'(el) { await flushSave(); const d = await DB.get(el.dataset.id); if (d) exportMeetFile(migrate(d)); },
     async 'meet-export-cur'() { await flushSave(); exportMeetFile(S); },
     'meet-import'() { pickImportMeet(); },
+    'meet-import-xlsx'() { pickWorkbook(); },
     'meet-backup'() { backupAll(); },
     async 'meet-del'(el) {
       const m = summaries.find(x => x.id === el.dataset.id); if (!m) return;

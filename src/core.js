@@ -728,16 +728,157 @@
         }
         rows[ri] = [...r].map(x => x == null ? '' : x);
       }
-      out.push({ name: sh.getAttribute('name'), rows: [...rows].map(r => r || []) });
+      out.push({ name: sh.getAttribute('name'), state: sh.getAttribute('state') || 'visible', rows: [...rows].map(r => r || []) });
     }
     return out;
+  }
+
+
+  // ---------------------------------------------------------------- full workbook import (Horse & Jockey style .xlsm)
+  const fixWb = v => typeof v === 'string'
+    ? norm(v).replace('JUnder nior', 'Junior').replace('IUnder AA', 'IUAA').replace('JUnder N', 'JUN').replace(/^SEnior/, 'Senior').replace('U11Girls', 'U11 Girls')
+    : v;
+  const serialDate = v => {
+    if (typeof v === 'number' && v > 1000 && v < 80000) return new Date(Date.UTC(1899, 11, 30) + Math.round(v * 86400000));
+    const iso = parseDate(v); return iso ? new Date(iso + 'T00:00:00Z') : null;
+  };
+  function wbTime(v, clock) {
+    if (v == null || v === '') return '';
+    if (typeof v === 'number') {
+      if (clock && Number.isInteger(v) && v >= 0 && v < 24) return String(v).padStart(2, '0') + ':00';
+      const frac = v % 1 === 0 && !clock ? null : v % 1;
+      if (frac == null) return '';
+      let secs = Math.round(frac * 86400 * 100) / 100;
+      const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), sec = secs % 60;
+      if (clock) return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      const ss = (Math.round(sec * 100) / 100).toFixed(sec % 1 ? 2 : 0).padStart(sec % 1 ? 5 : 2, '0');
+      return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+    }
+    const t = norm(v);
+    return /^\d{1,2}:\d{2}(:\d{2})?([.,]\d+)?$/.test(t) ? t : '';
+  }
+  /** Is this a meet workbook (has Program + Entries sheets)? */
+  function isMeetWorkbook(sheets) {
+    const names = new Set(sheets.map(s => s.name.toLowerCase()));
+    return names.has('entries') && names.has('program');
+  }
+  /**
+   * Convert a Horse & Jockey style workbook (from readXlsx) to a meet.
+   * Returns {meet, report} where meet has settings, program, entries, results, and reference data.
+   */
+  function importWorkbook(sheets) {
+    const by = new Map(sheets.map(s => [s.name.toLowerCase(), s]));
+    const rowsOf = n => (by.get(n) || { rows: [] }).rows;
+    const report = { warnings: [], lateEntries: [] };
+    // --- intro
+    const intro = {};
+    for (const r of rowsOf('intro')) if (r && r[0]) intro[lc(r[0])] = r[1];
+    const dateObj = serialDate(intro['date']);
+    const date = dateObj ? dateObj.toISOString().slice(0, 10) : '';
+    const year = +intro['year of competition'] || (dateObj ? dateObj.getUTCFullYear() : new Date().getFullYear());
+    const level = ['Club', 'County', 'Provincial', 'National'].find(x => lc(x) === lc(intro['competition region level'])) || 'Provincial';
+    const settings = {
+      title: fixWb(intro['event'] || '').replace(/\s+,/g, ',') || 'Imported meet', venue: fixWb(intro['venue'] || ''), date,
+      time: wbTime(intro['time'], true), year, startId: +intro['starting id number'] || 1,
+      autoNumber: lc(intro['auto id number']) !== 'manual', regionLevel: level, region: fixWb(intro['competition region'] || ''),
+    };
+    // --- age categories
+    const num = v => (typeof v === 'number' ? v : +v) || 0;
+    const ageCategories = [];
+    const cc = rowsOf('config_ccrr');
+    for (let i = 1; i < cc.length; i++) {
+      const r = cc[i] || []; const name = fixWb(r[0]);
+      if (!name || /^=|#REF/i.test(name) || ageCategories.some(c => c.name === name)) continue;
+      const age = typeof r[3] === 'number' ? r[3] : null;
+      const rule = v => { const d = serialDate(v); return d && age != null ? { yearOffset: d.getUTCFullYear() - year + age, month: d.getUTCMonth() + 1, day: d.getUTCDate() } : null; };
+      const c = {
+        name, code: fixWb(r[1]) || '', gender: ['M', 'W'].includes(norm(r[2])) ? norm(r[2]) : '', age,
+        dobFrom: rule(r[4]), dobTo: rule(r[5]), ccDistance: norm(r[6]), rrDistance: norm(r[7]),
+        cc: { club: num(r[8]), clubMulti: !!num(r[9]), county: num(r[10]), countyMulti: !!num(r[11]), province: num(r[12]), provinceMulti: !!num(r[13]) },
+        rr: { club: num(r[14]), clubMulti: !!num(r[15]), county: num(r[16]), countyMulti: !!num(r[17]), province: num(r[18]), provinceMulti: !!num(r[19]) },
+        noOwnRanking: false, scoresIn: [],
+      };
+      if (/^(novice & u23|senior & novice) (men|women)$/i.test(name)) { c.noOwnRanking = true; c.scoresIn = ['*']; }
+      else if (/^intermediate & masters/i.test(name)) { c.noOwnRanking = true; c.scoresIn = [name.replace(/^intermediate & /i, '')]; }
+      ageCategories.push(c);
+    }
+    // --- clubs, masters team categories
+    const teams = [], seenTeam = new Set(), mastersTeamCategories = [];
+    const ct = rowsOf('config_team');
+    for (let i = 1; i < ct.length; i++) {
+      const r = ct[i] || [];
+      const name = fixWb(r[0]);
+      if (name && !seenTeam.has(name)) { seenTeam.add(name); teams.push({ name, code: norm(r[1]), county: fixWb(r[2]) || '', province: fixWb(r[3]) || '' }); }
+      const m = fixWb(r[9]); if (m && !mastersTeamCategories.includes(m)) mastersTeamCategories.push(m);
+    }
+    // --- program
+    const program = [];
+    const pr = rowsOf('program');
+    for (let i = 1; i < pr.length; i++) {
+      const r = pr[i] || [];
+      if (r[0] === '' || r[0] == null || !r[1]) continue;
+      const number = typeof r[0] === 'number' ? r[0] : norm(r[0]);
+      let ev = program.find(p => String(p.number) === String(number));
+      if (!ev) { ev = { number, categories: [], type: lc(r[2]) === 'rr' ? 'RR' : 'CC', distance: norm(r[3]), time: wbTime(r[4], true) }; program.push(ev); }
+      const cat = fixWb(r[1]); if (!ev.categories.includes(cat)) ev.categories.push(cat);
+    }
+    // --- entries
+    const entries = [], idSeen = new Set();
+    const en = rowsOf('entries');
+    for (let i = 1; i < en.length; i++) {
+      const r = en[i] || [];
+      if (!norm(r[2])) continue;
+      const d = r[4] !== '' && r[4] != null ? serialDate(r[4]) : null;
+      const e = {
+        id: typeof r[0] === 'number' ? r[0] : (/^\d+$/.test(norm(r[0])) ? +norm(r[0]) : null),
+        name: fixWb(r[2]), category: fixWb(r[3]) || '', dob: d ? d.toISOString().slice(0, 10) : '', reg: norm(r[5]),
+        team: fixWb(r[6]) || '', scoringTeam: fixWb(r[7]) || '', county: fixWb(r[8]) || '', province: fixWb(r[9]) || '',
+        mastersTeam: fixWb(r[12]) || '', mastersCountyTeam: fixWb(r[13]) || '',
+      };
+      if (e.scoringTeam === e.team) e.scoringTeam = '';
+      entries.push(e); if (e.id != null) idSeen.add(String(e.id));
+    }
+    // --- results sheets
+    const results = {}; const resultSheets = [];
+    for (const sh of sheets) {
+      if (!/^results /i.test(sh.name) || sh.state !== 'visible') continue;
+      const label = fixWb(sh.name.slice(8));
+      const firstCat = fixWb((sh.rows[1] || [])[8]);
+      let ev = program.find(p => p.categories.includes(label))
+        || program.find(p => p.categories.some(c => c.startsWith(label) || label.startsWith(c)))
+        || (firstCat && program.find(p => p.categories.includes(firstCat)));
+      if (!ev) { report.warnings.push(`Sheet “${sh.name}” doesn't match a race on the program — skipped`); continue; }
+      const order = [];
+      for (let i = 1; i < sh.rows.length; i++) {
+        const r = sh.rows[i] || [];
+        if (r[0] === '' || r[0] == null) break;
+        const id = String(typeof r[0] === 'number' ? r[0] : norm(r[0]));
+        order.push({ id, time: wbTime(r[1], false) });
+        if (!idSeen.has(id) && norm(r[3]) && /^\d+$/.test(id)) {
+          const cat = fixWb(r[8]) || (ev.categories.length === 1 ? ev.categories[0] : '');
+          const late = { id: +id, name: fixWb(r[3]), category: cat, dob: '', reg: '', team: fixWb(r[4]) || '', scoringTeam: fixWb(r[5]) || '', county: fixWb(r[6]) || '', province: '', mastersTeam: '', mastersCountyTeam: '', late: true };
+          if (late.scoringTeam === late.team) late.scoringTeam = '';
+          report.lateEntries.push(late); idSeen.add(id);
+        }
+      }
+      const key = String(ev.number);
+      if (!results[key] || order.length > results[key].length) results[key] = order;
+      resultSheets.push(sh.name);
+    }
+    const counties = [...new Set([...teams.map(t => t.county), ...entries.map(e => e.county)].filter(Boolean))].sort();
+    const provinces = [...new Set(['Connacht', 'Leinster', 'Munster', 'Ulster', ...teams.map(t => t.province), ...entries.map(e => e.province)].filter(Boolean))].sort();
+    Object.assign(report, {
+      races: program.length, athletes: entries.length, finishers: Object.values(results).reduce((a, r) => a + r.length, 0),
+      resultSheets: resultSheets.length, categories: ageCategories.length, clubs: teams.length,
+    });
+    return { meet: { settings, program, entries, results, ageCategories, teams, mastersTeamCategories, counties, provinces }, report };
   }
 
   root.XC = {
     norm, lc, levenshtein, clubKey, clubCore, makeClubMatcher, parseGender, catTokens, makeCategoryMatcher,
     catDobRange, categoryFromDob, parseDate, formatName, splitFullName, titleCase, parseDelimited, parseCSV,
     parseHtmlTables, FIELDS, headerField, detectColumns, rowsToRecords, computeTeams, scoreEvent, validate,
-    buildXlsx, readXlsx, crc32, colName,
+    buildXlsx, readXlsx, crc32, colName, isMeetWorkbook, importWorkbook, wbTime,
   };
   if (typeof module !== 'undefined') module.exports = root.XC;
 })(typeof window !== 'undefined' ? window : globalThis);

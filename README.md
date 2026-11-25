@@ -7,6 +7,7 @@ It's a single offline HTML file that opens in its own Microsoft Edge window. The
 ## Features
 
 - **Meets library**: create a meet with just a name and date. Older meets stay listed by year to reopen, reprint or copy for next year.
+- **Import Excel workbooks**: turn an existing meet workbook (the original `.xlsm` layout) into a meet. This brings in competition details, races, athletes, results, clubs, age categories and team sizes, plus late entries typed only on the results sheets.
 - **Program**: races with one or more age categories each. Combined races are still ranked and team-scored per category.
 - **Athletes**: copy from Excel, Google Sheets or a website and press **Ctrl+V**. Columns, clubs and age categories are matched automatically. You confirm anything uncertain, and those choices are remembered. `.xlsx` and `.csv` files can be imported directly.
 - **Checks**: duplicate numbers, unknown clubs, counties and categories, and possible duplicate athletes. Simple spelling differences can be fixed in one click.

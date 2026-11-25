@@ -1,4 +1,4 @@
-XC MEET MANAGER  v1.1
+XC MEET MANAGER  v1.2
 =====================
 A Windows app for running cross-country and road-race meets. It does what the
 "DAY 1 Horse & Jockey" Excel workbook does, without macros or Excel:
@@ -31,6 +31,12 @@ MEETS
   - Clubs, age categories and remembered club spellings carry over from your
     most recent meet.
   - Everything saves automatically as you work.
+
+IMPORTING AN OLD EXCEL MEET WORKBOOK
+  Meets tab -> "Import Excel workbook..." -> choose the .xlsm/.xlsx.
+  Competition details, races, athletes, results, clubs, age categories and
+  team sizes all come across as a new meet. Athletes added only on a results
+  sheet (late entries) are offered too. The workbook itself isn't changed.
 
 BACKUPS
   - "Back up all meets" (Meets tab) saves every meet into one file. Do this
