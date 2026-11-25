@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XC Meet Manager</title>
+<style>/*CSS*/</style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand"><span class="logo">XC</span><div><div class="brand-name">XC Meet Manager</div><div class="brand-sub" id="comp-title">—</div></div></div>
+    <div class="top-actions">
+      <span id="save-status" class="save-status"></span>
+      <button class="btn ghost" data-act="export-all" data-needs-meet>Export to Excel</button>
+      <button class="btn" data-act="meet-new">+ New meet</button>
+    </div>
+  </header>
+  <nav class="tabs" id="tabs">
+    <button data-tab="meets">☰ Meets <span class="badge" id="badge-meets"></span></button>
+    <button data-tab="comp">1 · Competition</button>
+    <button data-tab="program">2 · Program</button>
+    <button data-tab="entries">3 · Athletes <span class="badge" id="badge-entries"></span></button>
+    <button data-tab="lists">4 · Lists &amp; booklet</button>
+    <button data-tab="results">5 · Results &amp; scoring</button>
+    <button data-tab="setup">Reference data</button>
+  </nav>
+  <main id="view"></main>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+<div id="print-root"></div>
+<input type="file" id="file-open" accept=".json,application/json" multiple hidden>
+<input type="file" id="file-import" accept=".xlsx,.xlsm,.csv,.txt,.tsv,.html,.htm" hidden>
+<script id="seed-data" type="application/json">/*SEED*/</script>
+<script id="sample-data" type="application/json">/*SAMPLE*/</script>
+<script>/*CORE*/</script>
+<script>/*APP*/</script>
+</body>
+</html>
