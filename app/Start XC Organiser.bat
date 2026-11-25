@@ -1,7 +1,7 @@
 @echo off
-rem Opens XC Meet Manager in its own window (Microsoft Edge app mode, or Chrome).
+rem Opens XC Organiser in its own window (Microsoft Edge app mode, or Chrome).
 setlocal EnableDelayedExpansion
-set "APP=%~dp0XC-Meet-Manager.html"
+set "APP=%~dp0XC-Organiser.html"
 set "URL=file:///!APP:\=/!"
 set "URL=!URL: =%%20!"
 set "PROFILE=%LOCALAPPDATA%\XCMeetManager\BrowserProfile"

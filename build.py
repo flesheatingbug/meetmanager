@@ -1,7 +1,7 @@
 """Build the single-file app:  python build.py
 
 Inlines src/ (HTML, CSS, JS) and data/ (reference data + example meet)
-into app/XC-Meet-Manager.html (runs offline in Edge or Chrome) and
+into app/XC-Organiser.html (runs offline in Edge or Chrome) and
 tauri-dist/index.html (the Windows app, see src-tauri/).
 """
 import json
@@ -9,7 +9,7 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).parent
 SRC, DATA = ROOT / 'src', ROOT / 'data'
-OUT = ROOT / 'app' / 'XC-Meet-Manager.html'
+OUT = ROOT / 'app' / 'XC-Organiser.html'
 
 
 def read(p):

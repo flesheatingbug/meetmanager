@@ -1,4 +1,4 @@
-/* XC Meet Manager — UI */
+/* XC Organiser — UI */
 (function () {
   'use strict';
   const X = window.XC;
@@ -8,7 +8,7 @@
   const clone = o => JSON.parse(JSON.stringify(o));
   const SEED = JSON.parse($('#seed-data').textContent);
   const LS_CUR = 'xcmm.current.v1', LS_REF = 'xcmm.reference.v1', LS_LAST = 'xcmm.lastMeet', LS_BACKUP = 'xcmm.lastBackup';
-  const APP_VERSION = '1.3.0';
+  const APP_VERSION = '1.4.0';
   let uidc = Date.now();
   const uid = () => 'a' + (uidc++).toString(36);
 
@@ -309,7 +309,7 @@
     Sync.cfg = { ...Sync.cfg, enabled: true, folder, asked: true }; saveSyncCfg();
     Sync.files.clear();
     try {
-      await backend.write('README.txt', 'This folder keeps XC Meet Manager in sync between your computers.\r\nEach file is one meet. Please don\'t edit, rename or move these files.\r\n');
+      await backend.write('README.txt', 'This folder keeps XC Organiser in sync between your computers.\r\nEach file is one meet. Please don\'t edit, rename or move these files.\r\n');
     } catch (e) { setSync('error', String(e.message || e)); toast('Could not use that folder: ' + (e.message || e), true); return; }
     await syncNow();
     if (Sync.status === 'ok') toast('Sync is on');
@@ -360,6 +360,66 @@
     if (!Sync.cfg.asked) syncDialog();
   }
 
+
+  // ================================================================ updates (Windows app) — check, download in background, restart to apply
+  const Upd = { state: 'idle', info: null, path: null, pct: 0, current: '', msg: '' };
+  const cmpVer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; } return 0; };
+  async function updateCheck(manual) {
+    if (!isApp || Upd.state === 'downloading' || Upd.state === 'installing') return;
+    if (manual) { Upd.msg = 'Checking…'; renderUpdateRow(); }
+    try {
+      Upd.current = Upd.current || await invoke('app_version');
+      const info = await invoke('update_check');
+      if (!info || !info.version || !info.url || cmpVer(info.version, Upd.current) <= 0) {
+        if (manual) { Upd.msg = `You're up to date (version ${Upd.current}).`; renderUpdateRow(); }
+        return;
+      }
+      if (Upd.state === 'ready' && Upd.info && Upd.info.version === info.version) { if (manual) { Upd.msg = ''; renderUpdateRow(); } return; }
+      Upd.info = info; Upd.state = 'downloading'; Upd.pct = 0; Upd.msg = ''; renderChrome(); renderUpdateRow();
+      Upd.path = await invoke('update_download', { url: info.url, sha256: info.sha256 || '', version: info.version });
+      Upd.state = 'ready'; renderChrome(); renderUpdateRow();
+    } catch (e) {
+      if (Upd.state === 'downloading') Upd.state = 'idle';
+      renderChrome();
+      if (manual) { Upd.msg = "Couldn't check for updates — " + (String(e && e.message || e).includes('dns') || String(e).includes('Network') ? 'no internet connection?' : String(e && e.message || e)); renderUpdateRow(); }
+    }
+  }
+  async function installUpdate() {
+    if (Upd.state !== 'ready' || !Upd.path) return;
+    Upd.state = 'installing'; renderChrome(); renderUpdateRow();
+    try {
+      await flushSave();
+      if (syncOn()) await syncNow();
+      await invoke('update_install', { path: Upd.path });
+    } catch (e) {
+      Upd.state = 'idle'; Upd.path = null; renderChrome();
+      toast('Update failed: ' + (e.message || e), true);
+    }
+  }
+  function updatePillHtml() {
+    if (Upd.state === 'downloading') return `Downloading update${Upd.pct ? ' ' + Math.round(Upd.pct * 100) + '%' : ''}…`;
+    if (Upd.state === 'ready') return '↺ Restart to update';
+    if (Upd.state === 'installing') return 'Updating…';
+    return '';
+  }
+  function updateRowHtml() {
+    if (!isApp) return `<span class="muted">XC Organiser ${esc(APP_VERSION)} · browser version (no sync or auto-update) — the Windows app is on <a href="https://github.com/flesheatingbug/meetmanager/releases/latest" target="_blank" rel="noopener">GitHub</a></span>`;
+    const ready = Upd.state === 'ready';
+    return `<span class="muted">XC Organiser ${esc(Upd.current || APP_VERSION)}</span>
+      <button class="btn small" data-act="upd-check" ${Upd.state === 'downloading' || Upd.state === 'installing' ? 'disabled' : ''}>Check for updates</button>
+      ${ready ? `<button class="btn small primary" data-act="upd-install">Update now to ${esc(Upd.info.version)}</button>` : ''}
+      <span class="small">${esc(Upd.state === 'downloading' ? `Downloading version ${Upd.info.version}${Upd.pct ? ' — ' + Math.round(Upd.pct * 100) + '%' : ''}…` : ready ? `Version ${Upd.info.version} is downloaded. Updating closes the app for a few seconds and reopens it.` : Upd.state === 'installing' ? 'Installing…' : Upd.msg)}</span>
+      <a href="#" data-act="upd-notes" class="small">What's new</a>`;
+  }
+  function renderUpdateRow() { const r = $('#update-row'); if (r) r.innerHTML = updateRowHtml(); }
+  function startUpdates() {
+    if (!isApp) return;
+    invoke('app_version').then(v => { Upd.current = v; renderUpdateRow(); }).catch(() => {});
+    if (window.__TAURI__.event) window.__TAURI__.event.listen('update-progress', e => { Upd.pct = +e.payload || 0; renderChrome(); renderUpdateRow(); });
+    setTimeout(() => updateCheck(false), 8000);
+    setInterval(() => updateCheck(false), 4 * 3600 * 1000);
+  }
+
   // ================================================================ files
   const fileTypes = [{ description: 'XC Meet file', accept: { 'application/json': ['.json'] } }];
   const safeName = s => (s || 'meet').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'meet';
@@ -375,12 +435,12 @@
   }
   async function exportMeetFile(state) {
     state = state || S;
-    await saveJson(safeName(`${state.settings.date || ''} ${state.settings.title}`) + '.json', JSON.stringify({ ...state, app: 'XC Meet Manager', appVersion: APP_VERSION, savedAt: new Date().toISOString() }, null, 1));
+    await saveJson(safeName(`${state.settings.date || ''} ${state.settings.title}`) + '.json', JSON.stringify({ ...state, app: 'XC Organiser', appVersion: APP_VERSION, savedAt: new Date().toISOString() }, null, 1));
   }
   async function backupAll() {
     await flushSave();
     const all = await DB.all();
-    await saveJson(`XC Meet Manager backup ${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ app: 'XC Meet Manager', kind: 'backup', appVersion: APP_VERSION, savedAt: new Date().toISOString(), meets: all }));
+    await saveJson(`XC Organiser backup ${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ app: 'XC Organiser', kind: 'backup', appVersion: APP_VERSION, savedAt: new Date().toISOString(), meets: all }));
     localStorage.setItem(LS_BACKUP, new Date().toISOString()); render();
   }
   /** Import a meet file or a full backup into the library. */
@@ -509,9 +569,11 @@
       be.className = 'badge' + (errs ? ' err' : '');
     } else be.textContent = '';
     $('#badge-meets').textContent = summaries.length || '';
+    const pill = $('#update-pill');
+    if (pill) { const t = updatePillHtml(); pill.hidden = !t; pill.textContent = t; pill.className = 'btn update-pill ' + Upd.state; pill.title = Upd.info ? 'Version ' + Upd.info.version : ''; }
     const chip = $('#sync-chip');
     if (chip) { chip.hidden = !isApp; chip.textContent = syncChipText(); chip.className = 'btn ghost sync-chip ' + (Sync.status === 'error' && Sync.cfg.enabled ? 'err' : ''); chip.title = Sync.cfg.enabled ? (Sync.error || 'Syncing via ' + Sync.cfg.folder) : 'Set up sync between computers'; }
-    document.title = S ? S.settings.title + ' — XC Meet Manager' : 'XC Meet Manager';
+    document.title = S ? S.settings.title + ' — XC Organiser' : 'XC Organiser';
   }
   function render() {
     if (!S && ui.tab !== 'meets') ui.tab = 'meets';
@@ -556,7 +618,8 @@
           <div class="row" style="justify-content:center"><button class="btn primary" data-act="meet-new">+ New meet</button><button class="btn" data-act="meet-import-xlsx">Import an Excel meet workbook…</button><button class="btn" data-act="load-sample">Add an example meet to try it out</button><button class="btn" data-act="meet-import">Import meet file…</button></div></div>`
         : !list.length ? '<div class="card empty">No meets match your search.</div>' : `
         ${upcoming.length ? `<h3>Upcoming</h3>${table(upcoming)}` : ''}
-        ${[...byYear.entries()].map(([y, ms]) => `<h3>${esc(y)}</h3>${table(ms)}`).join('')}`}`;
+        ${[...byYear.entries()].map(([y, ms]) => `<h3>${esc(y)}</h3>${table(ms)}`).join('')}`}
+      <div class="row small" id="update-row" style="margin-top:28px;padding-top:12px;border-top:1px solid var(--line)">${updateRowHtml()}</div>`;
   }
   function afterMeets() {
     const q = $('#meet-q');
@@ -1582,6 +1645,10 @@
     'meet-import'() { pickImportMeet(); },
     'meet-import-xlsx'() { pickWorkbook(); },
     'sync-open'() { syncDialog(); },
+    'upd-check'() { updateCheck(true); },
+    'upd-install'() { installUpdate(); },
+    'upd-pill'() { if (Upd.state === 'ready') installUpdate(); else { ui.tab = 'meets'; render(); } },
+    'upd-notes'() { if (isApp) invoke('open_releases').catch(() => {}); else window.open('https://github.com/flesheatingbug/meetmanager/releases/latest', '_blank'); },
     'meet-backup'() { backupAll(); },
     async 'meet-del'(el) {
       const m = summaries.find(x => x.id === el.dataset.id); if (!m) return;
@@ -1726,5 +1793,6 @@
     window.XCApp = { get state() { return S; }, actions, ui, render, importDialog, get summaries() { return summaries; }, flushSave, syncNow, Sync };
     render();
     startSync();
+    startUpdates();
   })();
 })();

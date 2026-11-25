@@ -145,3 +145,7 @@ table.meets-table tr.current td{background:#f1f8f3}
 table.meets-table td{padding:8px}
 
 .topbar .sync-chip.err{border-color:#f0a8a0;color:#ffd0c8}
+
+.topbar .update-pill{background:#2f5f8f;border-color:#2f5f8f;color:#fff}
+.topbar .update-pill.ready{background:#e0a030;border-color:#e0a030;color:#1d2320;font-weight:700}
+.topbar .update-pill.downloading,.topbar .update-pill.installing{opacity:.85;cursor:default}

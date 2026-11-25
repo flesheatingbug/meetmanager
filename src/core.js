@@ -1,4 +1,4 @@
-/* XC Meet Manager — core logic (no DOM). Works in browser and Node. */
+/* XC Organiser — core logic (no DOM). Works in browser and Node. */
 (function (root) {
   'use strict';
 

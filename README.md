@@ -1,4 +1,4 @@
-# XC Meet Manager
+# XC Organiser
 
 A Windows-first app for running cross-country and road-race athletics meets. It replaces the Munster Athletics *Horse & Jockey* Excel workbook (`.xlsm`), so you no longer need Excel or macros.
 
@@ -19,7 +19,9 @@ It's a Windows app that works offline and keeps meets in sync between computers 
 
 ## Installing (Windows)
 
-Download the installer (`XC Meet Manager_…_x64-setup.exe`) from the [latest release](https://github.com/flesheatingbug/meetmanager/releases/latest) and run it. It installs per user, so no admin rights are needed. The installer isn't code-signed, so SmartScreen may warn: choose **More info → Run anyway**.
+Download **[XC-Organiser-setup.exe](https://github.com/flesheatingbug/meetmanager/releases/download/latest-windows/XC-Organiser-setup.exe)** (from the [latest release](https://github.com/flesheatingbug/meetmanager/releases/latest)) and run it. It installs per user, so no admin rights are needed. The installer isn't code-signed, so SmartScreen may warn: choose **More info → Run anyway**.
+
+**Updates are automatic.** The app checks on startup and every few hours, downloads new versions in the background (checking the installer's SHA-256 against the release's `latest.json`), and shows **↺ Restart to update**. Clicking it closes the app, installs silently and reopens it. There's also **Check for updates** at the bottom of the Meets screen.
 
 When it first opens, it offers to sync through OneDrive. Turn it on with the same folder on every computer.
 
@@ -27,7 +29,7 @@ When it first opens, it offers to sync through OneDrive. Turn it on with the sam
 
 ### Browser version (no install, no sync)
 
-The [`app`](app/) folder still works on its own. Run `Start XC Meet Manager.bat` (Windows) or `start-linux.sh`. Meets are stored in that browser window's profile, so use **Back up all meets** regularly.
+The [`app`](app/) folder still works on its own. Run `Start XC Organiser.bat` (Windows) or `start-linux.sh`. Meets are stored in that browser window's profile, so use **Back up all meets** regularly.
 
 ## How sync works
 
@@ -44,9 +46,9 @@ The rules are in `planSync()` in `src/core.js`, with tests in `tests/run.js`.
 ## Project layout
 
 ```
-app/        Browser version: XC-Meet-Manager.html + launchers + user README
+app/        Browser version: XC-Organiser.html + launchers + user README
 src-tauri/  Windows app shell (Tauri 2, Rust): sync-folder access, Save dialogs
-.github/    CI: builds the Windows installer; tags v* publish a release
+.github/    CI: builds the installer and publishes the rolling latest-windows release
 src/        Source: index.html (shell), styles.css, core.js (logic), app.js (UI)
 data/       seed.json (age categories, team sizes, clubs, counties)
             sample-event.json (example meet, names replaced with made-up ones)
@@ -54,7 +56,7 @@ tests/      node tests/run.js — scoring & matching checks
 tools/      make_seed.py (extract reference data from the .xlsm),
             vba_extract.py (dump the workbook's VBA macros),
             anonymise_sample.py
-build.py    Inlines src/ + data/ into app/XC-Meet-Manager.html
+build.py    Inlines src/ + data/ into app/XC-Organiser.html
 ```
 
 `core.js` has no DOM dependencies. It handles parsing pasted tables, matching clubs and categories, validation, scoring, and reading and writing `.xlsx` files. `app.js` is the UI, written in vanilla JS with no build step other than `build.py`.
@@ -62,13 +64,15 @@ build.py    Inlines src/ + data/ into app/XC-Meet-Manager.html
 ## Development
 
 ```sh
-python build.py        # rebuild app/XC-Meet-Manager.html and tauri-dist/
+python build.py        # rebuild app/XC-Organiser.html and tauri-dist/
 node tests/run.js      # run the tests
 npx @tauri-apps/cli@2 dev     # run the Windows app from source (needs Rust)
 npx @tauri-apps/cli@2 build   # build the installer locally
 ```
 
-Re-run `build.py` after editing anything in `src/` or `data/`, and commit the rebuilt `app/XC-Meet-Manager.html`. Pushing to `main` builds the installer as a workflow artifact. To publish a release, bump the version in `src-tauri/tauri.conf.json` and `Cargo.toml`, then either push a tag like `v1.3.1`, or go to **Actions → Windows app → Run workflow** and tick *Publish a GitHub release*.
+Re-run `build.py` after editing anything in `src/` or `data/`, and commit the rebuilt `app/XC-Organiser.html`.
+
+**Releases:** every push to `main` builds the installer on GitHub Actions and replaces the rolling **`latest-windows`** release (`XC-Organiser-setup.exe` + `latest.json`). Installed apps pick it up automatically. Versions are `major.minor` from `src-tauri/tauri.conf.json` plus the build number as the patch (e.g. `1.4.12`). Bump `major.minor` there for bigger releases.
 
 To refresh the reference data from a newer workbook:
 

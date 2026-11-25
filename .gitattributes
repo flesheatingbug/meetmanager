@@ -2,4 +2,4 @@
 *.ps1 text eol=crlf
 app/README.txt text eol=crlf
 *.sh text eol=lf
-app/XC-Meet-Manager.html linguist-generated=true
+app/XC-Organiser.html linguist-generated=true

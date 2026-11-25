@@ -3,15 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>XC Meet Manager</title>
+<title>XC Organiser</title>
 <style>/*CSS*/</style>
 </head>
 <body>
 <div id="app">
   <header class="topbar">
-    <div class="brand"><span class="logo">XC</span><div><div class="brand-name">XC Meet Manager</div><div class="brand-sub" id="comp-title">—</div></div></div>
+    <div class="brand"><span class="logo">XC</span><div><div class="brand-name">XC Organiser</div><div class="brand-sub" id="comp-title">—</div></div></div>
     <div class="top-actions">
       <span id="save-status" class="save-status"></span>
+      <button id="update-pill" class="btn update-pill" data-act="upd-pill" hidden></button>
       <button id="sync-chip" class="btn ghost sync-chip" data-act="sync-open" hidden></button>
       <button class="btn ghost" data-act="export-all" data-needs-meet>Export to Excel</button>
       <button class="btn" data-act="meet-new">+ New meet</button>

@@ -18,14 +18,14 @@ through OneDrive: https://github.com/flesheatingbug/meetmanager/releases
 This folder is the no-install browser version (no sync).
 
 GETTING STARTED (Windows)
-  1. Unzip this folder somewhere permanent, e.g. Documents\XC Meet Manager.
-  2. Double-click "Start XC Meet Manager.bat".
+  1. Unzip this folder somewhere permanent, e.g. Documents\XC Organiser.
+  2. Double-click "Start XC Organiser.bat".
      It opens in its own window using Microsoft Edge (already on Windows 10/11).
   3. Optional: double-click "Create desktop shortcut.bat" for a desktop icon.
   Nothing is installed and it works offline.
 
   Linux: run ./start-linux.sh (uses Edge, Chrome, Chromium or Brave).
-  Any OS: you can also just open XC-Meet-Manager.html in Edge or Chrome.
+  Any OS: you can also just open XC-Organiser.html in Edge or Chrome.
 
 MEETS
   - The Meets tab lists every meet, newest first (upcoming ones at the top,

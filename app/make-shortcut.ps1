@@ -1,6 +1,6 @@
-# Creates a desktop shortcut that opens XC Meet Manager in its own window.
+# Creates a desktop shortcut that opens XC Organiser in its own window.
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$app = Join-Path $here 'XC-Meet-Manager.html'
+$app = Join-Path $here 'XC-Organiser.html'
 $url = 'file:///' + (($app -replace '\\', '/') -replace ' ', '%20')
 $profileDir = Join-Path $env:LOCALAPPDATA 'XCMeetManager\BrowserProfile'
 $candidates = @(
@@ -12,7 +12,7 @@ $candidates = @(
 )
 $exe = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 $shell = New-Object -ComObject WScript.Shell
-$lnkPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'XC Meet Manager.lnk'
+$lnkPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'XC Organiser.lnk'
 $lnk = $shell.CreateShortcut($lnkPath)
 if ($exe) {
   $lnk.TargetPath = $exe
@@ -22,6 +22,6 @@ if ($exe) {
   $lnk.TargetPath = $app
 }
 $lnk.WorkingDirectory = $here
-$lnk.Description = 'XC Meet Manager'
+$lnk.Description = 'XC Organiser'
 $lnk.Save()
 Write-Host "Shortcut created: $lnkPath"
