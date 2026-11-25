@@ -64,7 +64,7 @@
       progCats,
       catOrder: [...S.program.flatMap(p => p.categories), ...catNames.filter(c => !progCats.has(c))],
       clubMatch: X.makeClubMatcher(S.teams, S.aliases),
-      catMatch: X.makeCategoryMatcher(S.ageCategories),
+      catMatch: X.makeCategoryMatcher(S.ageCategories, progCats),
       issues: X.validate({ ...S, entries: S.entries }),
       eventOfCat: new Map(S.program.flatMap(p => p.categories.map(c => [c, p]))),
     };
@@ -789,7 +789,7 @@
     const d = derive();
     const q = X.lc(ui.q);
     let list = S.entries.filter(e => {
-      if (ui.fCat && e.category !== ui.fCat) return false;
+      if (ui.fCat === '__none__' ? (e.category && d.catByName.has(e.category)) : (ui.fCat && e.category !== ui.fCat)) return false;
       if (ui.fTeam && e.team !== ui.fTeam) return false;
       if (ui.onlyProblems && !d.issuesByUid.has(e.uid)) return false;
       if (q && !(X.lc(e.name).includes(q) || X.lc(e.team).includes(q) || String(e.id) === q || X.lc(e.reg).includes(q))) return false;
@@ -832,7 +832,7 @@
         <button class="btn" data-act="ent-add">+ Add athlete</button>
         <span class="spacer"></span>
         <input type="search" id="ent-q" placeholder="Search name, club, number…" value="${esc(ui.q)}" style="width:220px">
-        <select id="ent-cat"><option value="">All categories</option>${d.catOrder.filter(c => S.entries.some(e => e.category === c)).map(c => opt(c, `${c} (${S.entries.filter(e => e.category === c).length})`, ui.fCat === c)).join('')}</select>
+        <select id="ent-cat"><option value="">All categories</option>${(() => { const n = S.entries.filter(e => !e.category || !d.catByName.has(e.category)).length; return n ? opt('__none__', `⚠ No / unknown category (${n})`, ui.fCat === '__none__') : ''; })()}${d.catOrder.filter(c => S.entries.some(e => e.category === c)).map(c => opt(c, `${c} (${S.entries.filter(e => e.category === c).length})`, ui.fCat === c)).join('')}</select>
         <select id="ent-team" style="max-width:200px"><option value="">All clubs</option>${teamsUsed.map(t => opt(t, t, ui.fTeam === t)).join('')}</select>
       </div>
       <div class="toolbar small">
@@ -1125,10 +1125,11 @@
             ${hasId ? `<label class="chk"><input type="checkbox" id="imp-ids" ${st.useIds ? 'checked' : ''}> Keep numbers from the pasted list</label>` : ''}
           </div>
         </div>
+        ${(() => { const n = toImport.filter(r => !r.rec.category).length; return n ? `<div class="notice err" style="margin-top:12px"><b>${n} athlete${n > 1 ? 's have' : ' has'} no age category yet</b>, so ${n > 1 ? 'they' : 'it'} won't appear under any race. ${unknownCats.size ? 'Pick the right category for each value below' : 'Choose a category column above, or set “Age category for athletes without one”'} — or fix ${n > 1 ? 'them' : 'it'} after importing with the “No / unknown category” filter on the Athletes tab.</div>` : ''; })()}
         ${unknownClubs.size || unknownCats.size ? `<h3>3. Confirm unrecognised values</h3>
         <div class="notice warn small">These didn't match the club / category lists exactly. Pick the right one — your choices are remembered for next time.</div>
         <div class="fix-list">
-          ${[...unknownCats.entries()].map(([txt, n]) => `<div><span class="pill warn">category</span> <b>${esc(txt)}</b> <span class="muted small">×${n}</span></div><div class="arrow">→</div><select data-catfix="${esc(txt)}">${catOptions('', { blankLabel: '— leave blank —' })}</select><span></span>`).join('')}
+          ${[...unknownCats.entries()].map(([txt, n]) => `<div><span class="pill warn">category</span> <b>${esc(txt)}</b> <span class="muted small">×${n}</span></div><div class="arrow">→</div><select data-catfix="${esc(txt)}">${catOptions('', { blankLabel: '— pick a category —' })}</select><span></span>`).join('')}
           ${[...unknownClubs.entries()].map(([txt, info]) => `<div><span class="pill warn">club</span> <b>${esc(txt)}</b> <span class="muted small">×${info.n}</span></div><div class="arrow">→</div>
             <input type="text" list="dl-teams" data-clubfix="${esc(txt)}" value="${esc(bestFor(txt, info))}" placeholder="Type to pick a club">
             <span class="row" style="gap:4px"><button class="btn small" data-clubok="${esc(txt)}">Use this</button><button class="btn small" data-clubnew="${esc(txt)}" title="Add “${esc(txt)}” to the club list">Add as new club</button><button class="btn small" data-clubblank="${esc(txt)}">No club</button></span>`).join('')}
@@ -1142,7 +1143,8 @@
       go.disabled = !toImport.length;
       go.textContent = `Import ${toImport.length} athlete${toImport.length === 1 ? '' : 's'}`;
       const probs = toImport.filter(r => r.rec.problems.length).length;
-      $('#imp-summary', m.el).textContent = probs ? `${probs} will need fixing after import (shown in amber).` : '';
+      const noCat = toImport.filter(r => !r.rec.category).length;
+      $('#imp-summary', m.el).innerHTML = noCat ? `<span style="color:var(--err)">${noCat} without an age category</span>${probs > noCat ? ` · ${probs - noCat} other${probs - noCat > 1 ? 's' : ''} to check` : ''}` : probs ? `${probs} will need fixing after import (shown in amber).` : '';
       // wire
       $('#imp-again', m.body).onclick = () => { st.rows = null; draw(); };
       $$('[data-col]', m.body).forEach(s => s.onchange = () => {

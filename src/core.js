@@ -78,50 +78,61 @@
     return '';
   }
 
+  const CAT_WORDS = { snr: 'senior', sen: 'senior', jnr: 'junior', jr: 'junior', jun: 'junior', int: 'inter', nov: 'novice',
+    vets: 'masters', vet: 'masters', veterans: 'masters', master: 'masters', mst: 'masters', mas: 'masters' };
   function catTokens(text) {
-    let s = stripAccents(lc(text)).replace(/under[\s-]*(\d+)/g, 'u$1').replace(/over[\s-]*(\d+)/g, 'o$1')
-      .replace(/\b([uo])[\s-]+(\d+)/g, '$1$2').replace(/[^a-z0-9& ]+/g, ' ');
+    let s = stripAccents(lc(text))
+      .replace(/under[\s-]*(\d+)/g, 'u$1').replace(/over[\s-]*(\d+)/g, 'o$1')
+      .replace(/\b([uo])[\s-]+(\d+)/g, '$1$2')
+      .replace(/\b([uo])(\d+)(?:'?s)\b/g, '$1$2')            // U12s / U12's
+      .replace(/\b([uo])(\d+)([gbmfw])\b/g, '$1$2 $3')         // U12G / U12B / O35M
+      .replace(/\b([mwf])(\d{2})\b/g, (m, g, n) => (+n >= 30 && +n <= 95 ? `masters ${g} o${n}` : m)) // M35 / W40 / F45
+      .replace(/[^a-z0-9& ]+/g, ' ');
     const out = new Set();
-    let gender = '';
+    let gender = '', style = '';
     for (let w of s.split(/\s+/)) {
-      if (!w || w === '&' || w === 'and' || w === 'team') continue;
+      if (!w || w === '&' || w === 'and') continue;
+      w = CAT_WORDS[w] || w;
       const g = parseGender(w);
+      if (/^(men|mens|women|womens|ladies|male|female)$/.test(w)) style = 'adult';
+      else if (/^(boys|girls|boy|girl)$/.test(w)) style = 'youth';
       if (g) { gender = gender && gender !== g ? 'X' : g; continue; }
-      if (w === 'masters' || w === 'master' || w === 'vets' || w === 'veterans') w = 'masters';
       out.add(w);
     }
-    return { tokens: out, gender };
+    // "Masters Men 35" -> o35
+    if (out.has('masters')) for (const w of [...out]) if (/^\d{2}$/.test(w) && +w >= 30 && +w <= 95) { out.delete(w); out.add('o' + w); }
+    return { tokens: out, gender, style };
   }
 
-  /** match(text, genderHint) -> category name or '' */
-  function makeCategoryMatcher(cats) {
+  /** match(text, genderHint) -> category name or ''. prefer: Set of names to favour when several fit (e.g. on the program). */
+  function makeCategoryMatcher(cats, prefer) {
     const exact = new Map(cats.map(c => [lc(c.name), c.name]));
     const list = cats.map(c => {
       const t = catTokens(c.name);
-      return { name: c.name, tokens: t.tokens, gender: c.gender || t.gender, code: lc(c.code) };
+      return { name: c.name, tokens: t.tokens, gender: c.gender || t.gender, style: t.style, code: lc(c.code) };
     });
+    const pick = (cands, g, style) => {
+      if (cands.length > 1 && g) { const gc = cands.filter(c => c.gender === g); if (gc.length) cands = gc; }
+      if (cands.length > 1 && style) { const sc = cands.filter(c => c.style === style); if (sc.length) cands = sc; }
+      if (cands.length > 1 && prefer && prefer.size) { const pc = cands.filter(c => prefer.has(c.name)); if (pc.length) cands = pc; }
+      return cands.length === 1 ? cands[0].name : '';
+    };
     return function match(text, genderHint) {
       const raw = norm(text);
       if (!raw) return '';
       if (exact.has(lc(raw))) return exact.get(lc(raw));
       const t = catTokens(raw);
-      const g = t.gender || parseGender(genderHint);
+      const g = (t.gender === 'X' ? '' : t.gender) || parseGender(genderHint);
+      // team categories (e.g. "Men O35 Team") are only for team scoring, never an athlete's own category
+      const pool = list.filter(c => (t.tokens.has('team') || !c.tokens.has('team')) && (!g || !c.gender || c.gender === g));
       const same = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
-      let cands = list.filter(c => same(c.tokens, t.tokens) && (!g || !c.gender || c.gender === g));
+      let cands = pool.filter(c => same(c.tokens, t.tokens));
       if (!cands.length && t.tokens.size) {
-        // allow text tokens to be a subset (e.g. "U12" + gender)
-        cands = list.filter(c => [...t.tokens].every(x => c.tokens.has(x)) && (!g || c.gender === g));
-        if (cands.length > 1) {
-          const minSize = Math.min(...cands.map(c => c.tokens.size));
-          cands = cands.filter(c => c.tokens.size === minSize);
-        }
+        // text tokens are a subset (e.g. "U12" + gender, "O35 Men" -> Masters Men O35)
+        cands = pool.filter(c => [...t.tokens].every(x => c.tokens.has(x)) && (!g || c.gender === g));
+        if (cands.length > 1) { const min = Math.min(...cands.map(c => c.tokens.size)); cands = cands.filter(c => c.tokens.size === min); }
       }
-      if (cands.length === 1) return cands[0].name;
-      if (cands.length > 1 && g) {
-        const gc = cands.filter(c => c.gender === g);
-        if (gc.length === 1) return gc[0].name;
-      }
-      return '';
+      return pick(cands, g, t.style);
     };
   }
 

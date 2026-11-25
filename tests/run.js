@@ -49,6 +49,12 @@ test('category matching from pasted text', () => {
   assert.strictEqual(m('Under 12 Girls'), 'U12 Girls');
   assert.strictEqual(m('U12', 'F'), 'U12 Girls');
   assert.strictEqual(m('U14', 'Boys'), 'U14 Boys');
+  // shorthand used in club spreadsheets
+  for (const [txt, want] of [['U12G', 'U12 Girls'], ['U12B', 'U12 Boys'], ["U12's Girls", 'U12 Girls'], ['M35', 'Masters Men O35'], ['W40', 'Masters Women O40'],
+    ['O35 Men', 'Masters Men O35'], ['Masters Men 35', 'Masters Men O35'], ['Snr Women', 'Senior Women'], ['Snr Girls', 'Senior Girls'], ['Jnr Boys', 'Junior Boys']]) assert.strictEqual(m(txt), want, txt);
+  assert.strictEqual(m('U12'), '');                        // no gender: can't tell
+  const prefer = XC.makeCategoryMatcher(seed.ageCategories, new Set(['U12 Girls']));
+  assert.strictEqual(prefer('U12'), 'U12 Girls');          // only one U12 race on the program
 });
 
 test('club matching tolerates spelling differences', () => {
