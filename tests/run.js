@@ -3,28 +3,45 @@
 const assert = require('assert');
 const XC = require('../src/core.js');
 const seed = require('../data/seed.json');
-const meet = require('../data/sample-event.json');
-const expected = require('./expected-teams.json');
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log('ok -', name); };
 
-const state = { ...seed, ...meet, entries: meet.entries.map(e => ({ ...e, scoringTeam: e.scoringTeam || e.team })) };
+// A small invented race: club teams of 3, county teams of 4.
+const cat = (name, gender, club, county) => ({ name, gender, cc: { club, clubMulti: false, county, countyMulti: false, province: 6, provinceMulti: false }, rr: {} });
+const race = {
+  settings: { regionLevel: 'Provincial', unknownTakesPosition: true },
+  ageCategories: [cat('Test Girls', 'W', 3, 4), cat('Test Boys', 'M', 2, 4)],
+  mastersTeamCategories: [],
+  entries: [
+    ['Alpha', 'Cork'], ['Bravo', 'Cork'], ['Alpha', 'Cork'], ['Charlie', 'Kerry'], ['Bravo', 'Cork'], ['Alpha', 'Cork'],
+    ['Charlie', 'Kerry'], ['Bravo', 'Cork'], ['Charlie', 'Kerry'], ['Alpha', 'Cork'], ['Bravo', 'Cork'],
+  ].map(([team, county], i) => ({ id: i + 1, name: 'Runner ' + (i + 1), category: 'Test Girls', team, scoringTeam: team, county }))
+    .concat([{ id: 50, name: 'Boy A', category: 'Test Boys', team: 'Alpha', scoringTeam: 'Alpha', county: 'Cork' },
+      { id: 51, name: 'Boy B', category: 'Test Boys', team: 'Alpha', scoringTeam: 'Alpha', county: 'Cork' }]),
+};
+const finish = ids => ids.map(id => ({ id: String(id), time: '' }));
 
-test('team scores for every race match the reference results', () => {
-  for (const ev of meet.program) {
-    const res = XC.scoreEvent(state, ev, meet.results[ev.number] || []);
-    const got = res.groups.map(g => ({ category: g.category, club: g.teams.club.map(t => [t.name, t.points]), county: g.teams.county.map(t => [t.name, t.points]) }));
-    assert.deepStrictEqual(got, expected[ev.number], `event ${ev.number}`);
-  }
+test('club and county team scoring', () => {
+  const res = XC.scoreEvent(race, { number: 1, categories: ['Test Girls'] }, finish([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]));
+  const g = res.groups[0];
+  assert.deepStrictEqual(g.teams.club.map(t => [t.name, t.positions.join(','), t.points]), [['Alpha', '1,3,6', 10], ['Bravo', '2,5,8', 15], ['Charlie', '4,7,9', 20]]);
+  assert.deepStrictEqual(g.teams.county.map(t => [t.name, t.points]), [['Cork', 11]]); // Kerry has only 3 finishers
 });
 
-test('Novice Men (event 12) matches the workbook', () => {
-  const ev = meet.program.find(p => p.number === 12);
-  const g = XC.scoreEvent(state, ev, meet.results[12]).groups[0];
-  assert.deepStrictEqual(g.teams.club[0].positions, [4, 6, 8, 18]);
-  assert.strictEqual(g.teams.club[0].points, 36);
-  assert.deepStrictEqual(g.teams.county.map(t => t.points), [69, 81, 91, 108]);
+test('unknown numbers take a place but never score; duplicates are ignored', () => {
+  const res = XC.scoreEvent(race, { number: 1, categories: ['Test Girls'] }, finish([1, 999, 2, 3, 2, 4, 5, 6, 7, 8, 9]));
+  assert.deepStrictEqual(res.lines.map(l => l.pos), [1, 2, 3, 4, null, 5, 6, 7, 8, 9, 10]);
+  assert.strictEqual(res.errors, 2);
+  assert.deepStrictEqual(res.groups[0].teams.club.map(t => [t.name, t.points]), [['Alpha', 12], ['Bravo', 18], ['Charlie', 23]]);
+});
+
+test('combined race ranks each category separately', () => {
+  const res = XC.scoreEvent(race, { number: 1, categories: ['Test Girls', 'Test Boys'] }, finish([50, 1, 2, 51, 3]));
+  const boys = res.groups.find(g => g.category === 'Test Boys'), girls = res.groups.find(g => g.category === 'Test Girls');
+  assert.deepStrictEqual(boys.results.map(r => [r.pos, r.overall]), [[1, 1], [2, 4]]);
+  assert.deepStrictEqual(girls.results.map(r => [r.pos, r.overall]), [[1, 2], [2, 3], [3, 5]]);
+  assert.deepStrictEqual(boys.teams.club.map(t => [t.name, t.points]), [['Alpha', 3]]);
 });
 
 test('incomplete teams are dropped and ties split on last scorer', () => {

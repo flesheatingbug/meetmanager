@@ -1,6 +1,6 @@
 """Build the single-file app:  python build.py
 
-Inlines src/ (HTML, CSS, JS) and data/ (reference data + example meet)
+Inlines src/ (HTML, CSS, JS) and data/ (reference data)
 into app/XC-Organiser.html (runs offline in Edge or Chrome) and
 tauri-dist/index.html (the Windows app, see src-tauri/).
 """
@@ -27,7 +27,6 @@ def data(p):
 html = read(SRC / 'index.html')
 html = html.replace('/*CSS*/', read(SRC / 'styles.css'))
 html = html.replace('/*SEED*/', data(DATA / 'seed.json'))
-html = html.replace('/*SAMPLE*/', data(DATA / 'sample-event.json'))
 html = html.replace('/*CORE*/', script(read(SRC / 'core.js')))
 html = html.replace('/*APP*/', script(read(SRC / 'app.js')))
 OUT.write_text(html, encoding='utf-8')

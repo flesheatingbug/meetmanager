@@ -50,12 +50,10 @@ app/        Browser version: XC-Organiser.html + launchers + user README
 src-tauri/  Windows app shell (Tauri 2, Rust): sync-folder access, Save dialogs
 .github/    CI: builds the installer and publishes the rolling latest-windows release
 src/        Source: index.html (shell), styles.css, core.js (logic), app.js (UI)
-data/       seed.json (age categories, team sizes, clubs, counties)
-            sample-event.json (example meet, names replaced with made-up ones)
+data/       seed.json (age categories, team sizes, clubs, counties — no athletes)
 tests/      node tests/run.js — scoring & matching checks
 tools/      make_seed.py (extract reference data from the .xlsm),
-            vba_extract.py (dump the workbook's VBA macros),
-            anonymise_sample.py
+            vba_extract.py (dump the workbook's VBA macros)
 build.py    Inlines src/ + data/ into app/XC-Organiser.html
 ```
 
@@ -77,11 +75,10 @@ Re-run `build.py` after editing anything in `src/` or `data/`, and commit the re
 To refresh the reference data from a newer workbook:
 
 ```sh
-python tools/make_seed.py workbook.xlsm data/seed.json private-sample.json reference.json
-python tools/anonymise_sample.py private-sample.json data/sample-event.json
+python tools/make_seed.py workbook.xlsm data/seed.json private-meet.json private-reference.json
 ```
 
-The extracted sample contains real athletes' names. Only commit the anonymised version.
+Only `data/seed.json` belongs in the repo. The other two outputs contain athletes' details: keep them private and never commit them (`.gitignore` already excludes `private-*.json`). The same goes for any meet files, backups or workbooks: athlete data never goes in this repository.
 
 ## Scoring rules (from the workbook's macros)
 

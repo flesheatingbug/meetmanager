@@ -68,5 +68,3 @@ RESULTS
 
 Reference data (clubs, counties, age categories, team sizes) is pre-loaded from
 the workbook and can be edited under "Reference data".
-"Add an example meet" on the empty Meets screen loads a full example meet
-(real clubs, numbers and results from a 2025 Munster meet, with made-up names).

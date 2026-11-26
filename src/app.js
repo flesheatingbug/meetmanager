@@ -615,7 +615,7 @@
       ${summaries.some(m => m.conflictOf) ? `<div class="notice warn"><b>Some meets were changed on both computers before they could sync.</b> The later version is kept as normal and the earlier one is kept too, marked <span class="pill warn">kept copy</span>. Check them, then delete the one you don't need.</div>` : ''}
       ${isApp && !Sync.cfg.enabled ? `<div class="notice small">☁ Use this on more than one computer? <a href="#" data-act="sync-open">Turn on sync with OneDrive</a> to keep your meets the same everywhere.</div>` : ''}
       ${!summaries.length ? `<div class="card empty"><p style="font-size:17px;margin-top:0">No meets yet</p><p>Create your first meet — just give it a name and date.</p>
-          <div class="row" style="justify-content:center"><button class="btn primary" data-act="meet-new">+ New meet</button><button class="btn" data-act="meet-import-xlsx">Import an Excel meet workbook…</button><button class="btn" data-act="load-sample">Add an example meet to try it out</button><button class="btn" data-act="meet-import">Import meet file…</button></div></div>`
+          <div class="row" style="justify-content:center"><button class="btn primary" data-act="meet-new">+ New meet</button><button class="btn" data-act="meet-import-xlsx">Import an Excel meet workbook…</button><button class="btn" data-act="meet-import">Import meet file…</button></div></div>`
         : !list.length ? '<div class="card empty">No meets match your search.</div>' : `
         ${upcoming.length ? `<h3>Upcoming</h3>${table(upcoming)}` : ''}
         ${[...byYear.entries()].map(([y, ms]) => `<h3>${esc(y)}</h3>${table(ms)}`).join('')}`}
@@ -1765,12 +1765,6 @@
       await DB.del(m.id); await refreshSummaries(); ui.tab = 'meets'; render(); toast('Deleted ' + m.title); syncSoon(500);
     },
     'meet-del-cur'(el) { actions['meet-del']({ dataset: { id: S.id } }); },
-    async 'load-sample'() {
-      const d = JSON.parse($('#sample-data').textContent);
-      const st = migrate(d); st.id = 'example-conna-2025';
-      if (summaries.some(m => m.id === st.id)) { openMeet(st.id); return; }
-      await addMeet(st, 'results'); toast('Added the example meet with ' + st.entries.length + ' athletes');
-    },
     'export-all'() {
       const sheets = [
         { name: 'Competition', rows: [[{ v: S.settings.title, h: true }], ['Venue', S.settings.venue], ['Date', S.settings.date], ['Time', S.settings.time], ['Level', S.settings.regionLevel], ['Region', S.settings.region], [], ['Event', 'Categories', 'Type', 'Distance', 'Time', 'Entered', 'Finishers'], ...S.program.map(p => [p.number, p.categories.join(' / '), p.type, p.distance, p.time, entriesFor(p).length, (S.results[p.number] || []).length])], bold: new Set([7]), widths: [12, 40, 8, 12, 10, 10, 10] },
